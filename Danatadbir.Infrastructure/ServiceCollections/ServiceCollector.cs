@@ -13,7 +13,7 @@ public static class ServiceCollector
         services.AddApplicationInfluxDb(configuration);
 
         services.BindDomainRepositories();
-        services.BindServices();
+        services.BindServices(configuration);
 
         services.AddInfrastructureHealthChecks();
 
