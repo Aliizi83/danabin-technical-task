@@ -1,71 +1,82 @@
 {
   "rules": [
     {
-      "id": "temperature-operating-range",
-      "name": "Temperature Within Operating Range",
+      "id": "temperature-over-limit",
+      "name": "Temperature Above Safe Limit",
       "metric": "temperature",
       "deviceId": null,
-      "operator": "Between",
+      "operator": "GreaterThan",
       "enabled": true,
       "operatorParameters": {
-        "min": 50.0,
-        "max": 90.0
+        "threshold": 90.0
       }
     },
     {
-      "id": "vibration-non-negative",
-      "name": "Vibration Is Not Negative",
+      "id": "vibration-negative",
+      "name": "Negative Vibration Reported",
       "metric": "vibration",
       "deviceId": null,
-      "operator": "GreaterThanOrEqual",
+      "operator": "LessThan",
       "enabled": true,
       "operatorParameters": {
         "threshold": 0.0
       }
     },
     {
-      "id": "pump01-pressure-range",
-      "name": "Pump 01 Pressure Within Range",
+      "id": "pump01-pressure-collapsed",
+      "name": "Pump 01 Pressure Collapsed",
       "metric": "pressure",
       "deviceId": "PUMP-01",
-      "operator": "Between",
+      "operator": "LessThanOrEqual",
       "enabled": true,
       "operatorParameters": {
-        "min": 0.0,
-        "max": 12.0
+        "threshold": 0.0
       }
     },
     {
-      "id": "pump02-pressure-ceiling",
-      "name": "Pump 02 Pressure Below Ceiling",
+      "id": "pump02-pressure-over-limit",
+      "name": "Pump 02 Pressure At Or Above Limit",
       "metric": "pressure",
       "deviceId": "PUMP-02",
-      "operator": "LessThan",
+      "operator": "GreaterThanOrEqual",
       "enabled": true,
       "operatorParameters": {
         "threshold": 14.0
       }
     },
     {
-      "id": "comp01-temperature-ceiling",
-      "name": "Compressor 01 Temperature Ceiling",
+      "id": "comp01-temperature-over-limit",
+      "name": "Compressor 01 Temperature Above Limit",
       "metric": "temperature",
       "deviceId": "COMP-01",
-      "operator": "LessThanOrEqual",
+      "operator": "GreaterThan",
       "enabled": true,
       "operatorParameters": {
         "threshold": 73.0
       }
     },
     {
-      "id": "comp01-pressure-floor",
-      "name": "Compressor 01 Pressure Floor",
-      "metric": "pressure",
-      "deviceId": "COMP-01",
-      "operator": "GreaterThan",
+      "id": "fan03-vibration-sensor-fault",
+      "name": "Fan 03 Vibration Sensor Fault Code",
+      "metric": "vibration",
+      "deviceId": "FAN-03",
+      "operator": "Equal",
       "enabled": true,
       "operatorParameters": {
-        "threshold": 3.0
+        "value": -9999.0,
+        "tolerance": 0.001
+      }
+    },
+    {
+      "id": "comp01-pressure-stall-band",
+      "name": "Compressor 01 Pressure In Stall Band",
+      "metric": "pressure",
+      "deviceId": "COMP-01",
+      "operator": "Between",
+      "enabled": true,
+      "operatorParameters": {
+        "min": 2.8,
+        "max": 3.0
       }
     },
     {
@@ -93,15 +104,14 @@
       }
     },
     {
-      "id": "fan03-vibration-calibration",
-      "name": "Fan 03 Vibration Calibration Baseline",
+      "id": "pump01-vibration-over-limit",
+      "name": "Pump 01 Vibration Above Limit",
       "metric": "vibration",
-      "deviceId": "FAN-03",
-      "operator": "Equal",
+      "deviceId": "PUMP-01",
+      "operator": "GreaterThan",
       "enabled": false,
       "operatorParameters": {
-        "value": 0.0,
-        "tolerance": 0.05
+        "threshold": 5.0
       }
     }
   ]
