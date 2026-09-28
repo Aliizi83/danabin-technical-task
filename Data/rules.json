@@ -1,0 +1,108 @@
+{
+  "rules": [
+    {
+      "id": "temperature-operating-range",
+      "name": "Temperature Within Operating Range",
+      "metric": "temperature",
+      "deviceId": null,
+      "operator": "Between",
+      "enabled": true,
+      "operatorParameters": {
+        "min": 50.0,
+        "max": 90.0
+      }
+    },
+    {
+      "id": "vibration-non-negative",
+      "name": "Vibration Is Not Negative",
+      "metric": "vibration",
+      "deviceId": null,
+      "operator": "GreaterThanOrEqual",
+      "enabled": true,
+      "operatorParameters": {
+        "threshold": 0.0
+      }
+    },
+    {
+      "id": "pump01-pressure-range",
+      "name": "Pump 01 Pressure Within Range",
+      "metric": "pressure",
+      "deviceId": "PUMP-01",
+      "operator": "Between",
+      "enabled": true,
+      "operatorParameters": {
+        "min": 0.0,
+        "max": 12.0
+      }
+    },
+    {
+      "id": "pump02-pressure-ceiling",
+      "name": "Pump 02 Pressure Below Ceiling",
+      "metric": "pressure",
+      "deviceId": "PUMP-02",
+      "operator": "LessThan",
+      "enabled": true,
+      "operatorParameters": {
+        "threshold": 14.0
+      }
+    },
+    {
+      "id": "comp01-temperature-ceiling",
+      "name": "Compressor 01 Temperature Ceiling",
+      "metric": "temperature",
+      "deviceId": "COMP-01",
+      "operator": "LessThanOrEqual",
+      "enabled": true,
+      "operatorParameters": {
+        "threshold": 73.0
+      }
+    },
+    {
+      "id": "comp01-pressure-floor",
+      "name": "Compressor 01 Pressure Floor",
+      "metric": "pressure",
+      "deviceId": "COMP-01",
+      "operator": "GreaterThan",
+      "enabled": true,
+      "operatorParameters": {
+        "threshold": 3.0
+      }
+    },
+    {
+      "id": "pump02-overheating-sustained",
+      "name": "Pump 02 Overheating Sustained",
+      "metric": "temperature",
+      "deviceId": "PUMP-02",
+      "operator": "SustainedAbove",
+      "enabled": true,
+      "operatorParameters": {
+        "threshold": 73.0,
+        "durationSeconds": 60
+      }
+    },
+    {
+      "id": "temperature-sustained-fleet",
+      "name": "Fleet Temperature Sustained High",
+      "metric": "temperature",
+      "deviceId": null,
+      "operator": "SustainedAbove",
+      "enabled": true,
+      "operatorParameters": {
+        "threshold": 70.5,
+        "durationSeconds": 60
+      }
+    },
+    {
+      "id": "fan03-vibration-calibration",
+      "name": "Fan 03 Vibration Calibration Baseline",
+      "metric": "vibration",
+      "deviceId": "FAN-03",
+      "operator": "Equal",
+      "enabled": false,
+      "operatorParameters": {
+        "value": 0.0,
+        "tolerance": 0.05
+      }
+    }
+  ]
+}
