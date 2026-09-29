@@ -33,6 +33,11 @@ internal sealed class IngestionState(int sampleLimit)
 
     public List<RuleEpisodeDto> EpisodeResults { get; } = [];
 
+    public int RejectionsLogged;
+
+    /// <summary>Lines rejected as bad data; duplicates are not faults and are not part of this.</summary>
+    public int RejectionsTotal => _malformed + _invalid + _unknown;
+
     public void Reject(int lineNumber, RejectionReason reason, string detail)
     {
         switch (reason)

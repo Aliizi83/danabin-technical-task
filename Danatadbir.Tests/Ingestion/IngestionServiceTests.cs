@@ -1,5 +1,6 @@
 using Danatadbir.Application.IngestionService.Dtos;
 using Danatadbir.Tests.Fakes;
+using Microsoft.Extensions.Logging;
 using static Danatadbir.Tests.Fakes.Pipeline;
 
 namespace Danatadbir.Tests.Ingestion;
@@ -82,6 +83,82 @@ public class IngestionServiceTests
         var sample = Assert.Single(report.RejectionSamples);
         Assert.Equal(2, sample.LineNumber);
         Assert.Equal(RejectionReason.Malformed, sample.Reason);
+    }
+
+    [Fact]
+    public async Task Every_bad_line_is_logged_as_a_warning_with_its_line_number_and_reason()
+    {
+        var pipeline = new Pipeline();
+
+        await pipeline.RunAsync(Line(0, 70), "{bad json", Line(1, 70, sensor: "GHOST"));
+
+        var warnings = pipeline.IngestionLog.Entries.Where(e => e.Level == LogLevel.Warning).Select(e => e.Message).ToList();
+        Assert.Contains(warnings, m => m.Contains("Line 2") && m.Contains("Malformed"));
+        Assert.Contains(warnings, m => m.Contains("Line 3") && m.Contains("UnknownSensorOrMetric"));
+    }
+
+    [Fact]
+    public async Task A_duplicate_is_not_a_warning()
+    {
+        var pipeline = new Pipeline();
+
+        await pipeline.RunAsync(Line(0, 70), Line(0, 70));
+
+        Assert.DoesNotContain(pipeline.IngestionLog.Entries, e => e.Level == LogLevel.Warning);
+    }
+
+    [Fact]
+    public async Task A_badly_broken_file_cannot_flood_the_log()
+    {
+        var pipeline = new Pipeline();   // sample limit is 50
+
+        await pipeline.RunAsync(Enumerable.Range(0, 500).Select(i => $"{{broken {i}"));
+
+        var individually = pipeline.IngestionLog.Entries.Count(e => e.Level == LogLevel.Warning && e.Message.Contains("rejected as"));
+        Assert.Equal(50, individually);
+        Assert.Contains(pipeline.IngestionLog.Entries, e => e.Message.Contains("450 further rejected"));
+    }
+
+    [Fact]
+    public async Task The_processing_report_is_logged_with_the_counts_the_task_lists()
+    {
+        var pipeline = new Pipeline();
+
+        await pipeline.RunAsync(Line(0, 95), Line(10, 70), "{bad");
+
+        var report = pipeline.IngestionLog.Entries.Single(e => e.Message.StartsWith("Processing report")).Message;
+        foreach (var label in new[]
+                 {
+                     "total lines read", "parsed readings", "stored readings", "duplicates removed", "invalid records rejected",
+                     "rules loaded", "rule evaluations performed", "acceptable readings", "unacceptable readings",
+                     "rule violations", "alerts generated"
+                 })
+        {
+            Assert.Contains(label, report);
+        }
+    }
+
+    [Fact]
+    public async Task Sustained_episodes_and_raised_alerts_are_logged()
+    {
+        var pipeline = new Pipeline();
+
+        await pipeline.RunAsync(Enumerable.Range(0, 8).Select(i => Line(i * 10, 75)));
+
+        Assert.Contains(pipeline.IngestionLog.Entries, e => e.Message.StartsWith("Sustained episode"));
+        Assert.Contains(pipeline.AlertingLog.Entries, e => e.Level == LogLevel.Warning && e.Message.StartsWith("Alert raised"));
+    }
+
+    [Fact]
+    public async Task A_suppressed_episode_is_logged_with_the_alert_that_covered_it()
+    {
+        var pipeline = new Pipeline();
+
+        await pipeline.RunAsync(
+            Enumerable.Range(0, 8).Select(i => Line(i * 10, 75)).Append(Line(80, 60))
+                .Concat(Enumerable.Range(0, 8).Select(i => Line(220 + i * 10, 75))));
+
+        Assert.Contains(pipeline.AlertingLog.Entries, e => e.Message.StartsWith("Episode suppressed by cooldown"));
     }
 
     // ------------------------------------------------------------ deduplication

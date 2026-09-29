@@ -41,6 +41,8 @@ public class Pipeline
     public FakeLineSource Source { get; } = new();
     public RuleCatalog Catalog { get; }
     public IIngestionService Ingestion { get; }
+    public ListLogger<IngestionServiceImpl> IngestionLog { get; } = new();
+    public ListLogger<AlertingService> AlertingLog { get; } = new();
     public IReadingQueryService Queries { get; }
     public IAlertQueryService AlertQueries { get; }
 
@@ -50,13 +52,13 @@ public class Pipeline
 
         var sensors = new InMemorySensorRepository("PUMP-01", "PUMP-02", "COMP-01", "FAN-03");
         var metrics = new InMemoryMetricRepository("temperature", "pressure", "vibration");
-        var alerting = new AlertingService(Catalog, Alerts, NullLogger<AlertingService>.Instance);
+        var alerting = new AlertingService(Catalog, Alerts, AlertingLog);
 
         Ingestion = new IngestionServiceImpl(
             Source, Readings, sensors, metrics, RuleResults, Catalog,
             new RuleEvaluationService(Catalog), new EpisodeDetectionService(Catalog), alerting,
             Options.Create(new IngestionOptions { WriteBatchSize = 3, RejectionSampleLimit = 50 }),
-            NullLogger<IngestionServiceImpl>.Instance);
+            IngestionLog);
 
         Queries = new ReadingQueryService(sensors, metrics, Readings, RuleResults);
         AlertQueries = new AlertQueryService(sensors, metrics, Alerts);

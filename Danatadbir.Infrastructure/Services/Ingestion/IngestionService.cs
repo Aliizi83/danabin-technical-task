@@ -69,7 +69,7 @@ public class IngestionService(
 
             if (!outcome.IsParsed)
             {
-                state.Reject(lineNumber, outcome.Reason!.Value, outcome.Detail);
+                Reject(state, lineNumber, outcome.Reason!.Value, outcome.Detail);
                 continue;
             }
 
@@ -79,7 +79,7 @@ public class IngestionService(
             if (!knownSensors.TryGetValue(reading.SensorExternalId, out var sensorId)
                 || !knownMetrics.TryGetValue(reading.MetricKey, out var metricKey))
             {
-                state.Reject(lineNumber, RejectionReason.UnknownSensorOrMetric,
+                Reject(state, lineNumber, RejectionReason.UnknownSensorOrMetric,
                     $"'{reading.SensorExternalId}' / '{reading.MetricKey}' is not registered");
                 continue;
             }
@@ -91,7 +91,7 @@ public class IngestionService(
             // evaluated afterwards.
             if (state.Winners.ContainsKey(reading.Identity))
             {
-                state.Reject(lineNumber, RejectionReason.Duplicate,
+                Reject(state, lineNumber, RejectionReason.Duplicate,
                     $"{reading.SensorExternalId}/{reading.MetricKey} at {reading.Timestamp:o} seq {reading.Seq}");
             }
 
@@ -171,9 +171,38 @@ public class IngestionService(
                 episode.EndTs, episode.DurationSeconds, episode.PeakValue, episode.ReadingCount);
         }
 
+        if (state.RejectionsTotal > state.RejectionsLogged)
+        {
+            logger.LogWarning(
+                "{Count} further rejected lines were counted but not logged individually",
+                state.RejectionsTotal - state.RejectionsLogged);
+        }
+
         logger.LogInformation("{Report}", FormatReport(report));
 
         return BaseResult<IngestionReportDto>.Ok(report);
+    }
+
+    /// <summary>
+    /// Records a rejection and logs it. Bad lines are logged individually as warnings up to the
+    /// sample limit, so a badly broken file cannot flood the log; duplicates are a policy outcome
+    /// rather than a fault and are only logged at debug level.
+    /// </summary>
+    private void Reject(IngestionState state, int lineNumber, RejectionReason reason, string detail)
+    {
+        state.Reject(lineNumber, reason, detail);
+
+        if (reason == RejectionReason.Duplicate)
+        {
+            logger.LogDebug("Line {LineNumber} is a duplicate: {Detail}", lineNumber, detail);
+            return;
+        }
+
+        if (state.RejectionsLogged < _options.RejectionSampleLimit)
+        {
+            state.RejectionsLogged++;
+            logger.LogWarning("Line {LineNumber} rejected as {Reason}: {Detail}", lineNumber, reason, detail);
+        }
     }
 
     private static string FormatReport(IngestionReportDto report)
