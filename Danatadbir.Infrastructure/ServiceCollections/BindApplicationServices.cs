@@ -28,6 +28,7 @@ public static class BindApplicationServices
         services.AddScoped<IRuleEvaluationService, RuleEvaluationService>();
         services.AddScoped<IEpisodeDetectionService, EpisodeDetectionService>();
         services.AddScoped<IAlertingService, AlertingService>();
+        services.AddScoped<IAlertQueryService, AlertQueryService>();
         services.AddScoped<IReadingQueryService, ReadingQueryService>();
 
         return services;

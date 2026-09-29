@@ -28,6 +28,25 @@ public class AlertRepository(AppDbContext context) : IAlertRepository
                 group => (IReadOnlyList<DateTime>)group.Select(row => row.StartTs).Order().ToList());
     }
 
+    public Task<List<Alert>> QueryAsync(
+        string? sensorExternalId,
+        string? metricKey,
+        string? ruleId,
+        DateTime? from,
+        DateTime? to,
+        CancellationToken cancellationToken = default)
+    {
+        var query = context.Alerts.AsNoTracking().AsQueryable();
+
+        if (sensorExternalId is not null) query = query.Where(alert => alert.SensorExternalId == sensorExternalId);
+        if (metricKey is not null) query = query.Where(alert => alert.MetricKey == metricKey);
+        if (ruleId is not null) query = query.Where(alert => alert.RuleId == ruleId);
+        if (from is not null) query = query.Where(alert => alert.StartTs >= from);
+        if (to is not null) query = query.Where(alert => alert.StartTs < to);
+
+        return query.OrderBy(alert => alert.StartTs).ThenBy(alert => alert.RuleId).ToListAsync(cancellationToken);
+    }
+
     public async Task<int> AddMissingAsync(
         IReadOnlyCollection<Alert> alerts,
         CancellationToken cancellationToken = default)
