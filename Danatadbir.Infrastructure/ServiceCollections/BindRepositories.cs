@@ -13,6 +13,7 @@ public static class BindRepositories
         services.AddScoped<IMetricRepository, MetricRepository>();
         services.AddScoped<ISensorDataRepository, InfluxSensorDataRepository>();
         services.AddScoped<IRuleResultRepository, RuleResultRepository>();
+        services.AddScoped<IAlertRepository, AlertRepository>();
 
         return services;
     }
