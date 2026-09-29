@@ -12,6 +12,7 @@ public static class ServiceCollector
         services.AddAppDbContext(configuration);
         services.AddApplicationInfluxDb(configuration);
 
+        services.BindOperators();
         services.BindDomainRepositories();
         services.BindServices(configuration);
 

@@ -3,6 +3,7 @@ using System.Net;
 using Danatadbir.Application.Common.Result;
 using Danatadbir.Application.IngestionService;
 using Danatadbir.Application.IngestionService.Dtos;
+using Danatadbir.Application.RuleService;
 using Danatadbir.Domain.Entities;
 using Danatadbir.Domain.Repositories;
 using Microsoft.Extensions.Logging;
@@ -15,6 +16,9 @@ public class IngestionService(
     ISensorDataRepository sensorDataRepository,
     ISensorRepository sensorRepository,
     IMetricRepository metricRepository,
+    IRuleResultRepository ruleResultRepository,
+    IRuleCatalog ruleCatalog,
+    IRuleEvaluationService ruleEvaluationService,
     IOptions<IngestionOptions> options,
     ILogger<IngestionService> logger) : IIngestionService
 {
@@ -41,12 +45,11 @@ public class IngestionService(
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         logger.LogInformation(
-            "Ingestion started for {Source} with {SensorCount} sensors and {MetricCount} metrics registered",
-            source, knownSensors.Count, knownMetrics.Count);
+            "Ingestion started for {Source}: {SensorCount} sensors, {MetricCount} metrics, {RuleCount} rules loaded",
+            source, knownSensors.Count, knownMetrics.Count, ruleCatalog.Rules.Count);
 
         var stopwatch = Stopwatch.StartNew();
         var state = new IngestionState(_options.RejectionSampleLimit);
-        var batch = new List<SensorData>(_options.WriteBatchSize);
         var lineNumber = 0;
 
         await foreach (var line in lineSource.ReadLinesAsync(source, cancellationToken))
@@ -76,31 +79,57 @@ public class IngestionService(
                 continue;
             }
 
-            if (!state.Seen.Add(reading.Identity))
+            // Last wins: a later occurrence of the same reading replaces the earlier one. The
+            // winner is only known once the feed ends, so readings are resolved here and
+            // evaluated afterwards.
+            if (state.Winners.ContainsKey(reading.Identity))
             {
                 state.Reject(lineNumber, RejectionReason.Duplicate,
                     $"{reading.SensorExternalId}/{reading.MetricKey} at {reading.Timestamp:o} seq {reading.Seq}");
-                continue;
             }
 
-            batch.Add(reading);
-
-            if (batch.Count >= _options.WriteBatchSize)
-            {
-                await sensorDataRepository.WriteAsync(batch, cancellationToken);
-                state.StoredReadings += batch.Count;
-                batch.Clear();
-            }
+            state.Winners[reading.Identity] = reading;
         }
 
-        if (batch.Count > 0)
+        var readingBatch = new List<SensorData>(_options.WriteBatchSize);
+        var violationBatch = new List<RuleResult>();
+
+        foreach (var reading in state.Winners.Values
+                     .OrderBy(value => value.SensorExternalId)
+                     .ThenBy(value => value.MetricKey)
+                     .ThenBy(value => value.Timestamp)
+                     .ThenBy(value => value.Seq))
         {
-            await sensorDataRepository.WriteAsync(batch, cancellationToken);
-            state.StoredReadings += batch.Count;
+            var evaluation = ruleEvaluationService.Evaluate(reading);
+            state.RecordEvaluation(evaluation);
+
+            foreach (var violation in evaluation.Violations)
+            {
+                violationBatch.Add(new RuleResult
+                {
+                    SensorExternalId = reading.SensorExternalId,
+                    MetricKey = reading.MetricKey,
+                    Timestamp = reading.Timestamp,
+                    Seq = reading.Seq,
+                    Value = reading.Value,
+                    RuleId = violation.RuleId,
+                    RuleName = violation.RuleName,
+                    Reason = violation.Reason
+                });
+            }
+
+            readingBatch.Add(reading);
+
+            if (readingBatch.Count >= _options.WriteBatchSize)
+                state.StoredReadings += await FlushReadingsAsync(readingBatch, cancellationToken);
         }
+
+        state.StoredReadings += await FlushReadingsAsync(readingBatch, cancellationToken);
+        state.RuleViolationsStored = await ruleResultRepository.AddMissingAsync(violationBatch, cancellationToken);
 
         stopwatch.Stop();
-        var report = state.ToReport(source, stopwatch.Elapsed.TotalMilliseconds);
+        var report = state.ToReport(
+            source, stopwatch.Elapsed.TotalMilliseconds, ruleCatalog.Rules.Count, ruleCatalog.RejectedRules.Count);
 
         logger.LogInformation(
             "Ingestion of {Source} finished in {DurationMs:F0} ms: {Read} lines read, {Stored} stored, "
@@ -108,50 +137,24 @@ public class IngestionService(
             report.Source, report.DurationMs, report.TotalLinesRead, report.StoredReadings,
             report.DuplicatesRemoved, report.MalformedLines, report.InvalidRecords, report.UnknownSensorOrMetric);
 
+        logger.LogInformation(
+            "Rule evaluation: {Evaluations} evaluations over {Rules} rules, {Acceptable} acceptable, "
+            + "{Unacceptable} unacceptable, {Violations} violations ({StoredViolations} newly stored)",
+            report.RuleEvaluationsPerformed, report.RulesLoaded, report.AcceptableReadings,
+            report.UnacceptableReadings, report.RuleViolations, report.RuleViolationsStored);
+
         return BaseResult<IngestionReportDto>.Ok(report);
     }
 
-    private sealed class IngestionState(int rejectionSampleLimit)
+    private async Task<int> FlushReadingsAsync(List<SensorData> batch, CancellationToken cancellationToken)
     {
-        private readonly List<RejectedLineDto> _samples = [];
+        if (batch.Count == 0)
+            return 0;
 
-        public HashSet<(string, string, DateTime, long)> Seen { get; } = [];
+        await sensorDataRepository.WriteAsync(batch, cancellationToken);
+        var written = batch.Count;
+        batch.Clear();
 
-        public int TotalLinesRead;
-        public int ParsedReadings;
-        public int StoredReadings;
-
-        private int _duplicates;
-        private int _malformed;
-        private int _invalid;
-        private int _unknown;
-
-        public void Reject(int lineNumber, RejectionReason reason, string detail)
-        {
-            switch (reason)
-            {
-                case RejectionReason.Malformed: _malformed++; break;
-                case RejectionReason.InvalidField: _invalid++; break;
-                case RejectionReason.UnknownSensorOrMetric: _unknown++; break;
-                case RejectionReason.Duplicate: _duplicates++; break;
-            }
-
-            if (_samples.Count < rejectionSampleLimit)
-                _samples.Add(new RejectedLineDto(lineNumber, reason, detail));
-        }
-
-        public IngestionReportDto ToReport(string source, double durationMs) => new()
-        {
-            Source = source,
-            TotalLinesRead = TotalLinesRead,
-            ParsedReadings = ParsedReadings,
-            StoredReadings = StoredReadings,
-            DuplicatesRemoved = _duplicates,
-            MalformedLines = _malformed,
-            InvalidRecords = _invalid,
-            UnknownSensorOrMetric = _unknown,
-            DurationMs = durationMs,
-            RejectionSamples = _samples
-        };
+        return written;
     }
 }
