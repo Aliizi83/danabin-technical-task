@@ -38,13 +38,13 @@ public class IngestionService(
             return BaseResult<IngestionReportDto>.Failure(HttpStatusCode.NotFound, $"Feed '{source}' was not found.");
         }
 
+        // Lookup is case-insensitive but yields the registered spelling, so "pump-01" and "PUMP-01"
+        // end up as one series instead of two tags in the time-series store.
         var knownSensors = (await sensorRepository.GetAllAsync(cancellationToken))
-            .Select(sensor => sensor.ExternalId)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(sensor => sensor.ExternalId, sensor => sensor.ExternalId, StringComparer.OrdinalIgnoreCase);
 
         var knownMetrics = (await metricRepository.GetAllAsync(cancellationToken))
-            .Select(metric => metric.Key)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            .ToDictionary(metric => metric.Key, metric => metric.Key, StringComparer.OrdinalIgnoreCase);
 
         logger.LogInformation(
             "Ingestion started for {Source}: {SensorCount} sensors, {MetricCount} metrics, {RuleCount} rules loaded",
@@ -74,12 +74,15 @@ public class IngestionService(
             var reading = outcome.Reading!;
             state.ParsedReadings++;
 
-            if (!knownSensors.Contains(reading.SensorExternalId) || !knownMetrics.Contains(reading.MetricKey))
+            if (!knownSensors.TryGetValue(reading.SensorExternalId, out var sensorId)
+                || !knownMetrics.TryGetValue(reading.MetricKey, out var metricKey))
             {
                 state.Reject(lineNumber, RejectionReason.UnknownSensorOrMetric,
                     $"'{reading.SensorExternalId}' / '{reading.MetricKey}' is not registered");
                 continue;
             }
+
+            reading = reading with { SensorExternalId = sensorId, MetricKey = metricKey };
 
             // Last wins: a later occurrence of the same reading replaces the earlier one. The
             // winner is only known once the feed ends, so readings are resolved here and
