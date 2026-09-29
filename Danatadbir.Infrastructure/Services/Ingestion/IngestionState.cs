@@ -21,6 +21,7 @@ internal sealed class IngestionState(int sampleLimit)
     public int ParsedReadings;
     public int StoredReadings;
     public int RuleViolationsStored;
+    public int RuleViolationsRemoved;
 
     private int _evaluations;
     private int _acceptable;
@@ -111,6 +112,7 @@ internal sealed class IngestionState(int sampleLimit)
         UnacceptableReadings = _unacceptable,
         RuleViolations = _violations,
         RuleViolationsStored = RuleViolationsStored,
+        RuleViolationsRemoved = RuleViolationsRemoved,
         SustainedEpisodes = _episodes.Count,
         AlertsGenerated = _alerting.AlertsGenerated,
         AlertsStored = _alerting.AlertsStored,

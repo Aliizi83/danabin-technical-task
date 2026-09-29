@@ -21,6 +21,7 @@ public record IngestionReportDto
     public int UnacceptableReadings { get; init; }
     public int RuleViolations { get; init; }
     public int RuleViolationsStored { get; init; }
+    public int RuleViolationsRemoved { get; init; }
     public int SustainedEpisodes { get; init; }
 
     public int AlertsGenerated { get; init; }

@@ -60,6 +60,4 @@ public class AlertRepository(AppDbContext context) : IAlertRepository
         return missing.Count;
     }
 
-    public Task<int> CountAsync(CancellationToken cancellationToken = default) =>
-        context.Alerts.CountAsync(cancellationToken);
 }

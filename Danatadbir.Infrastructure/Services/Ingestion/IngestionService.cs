@@ -151,7 +151,9 @@ public class IngestionService(
             state.RecordEpisodes(DetectEpisodes(currentSeries.Value, series));
 
         state.StoredReadings += await FlushReadingsAsync(readingBatch, cancellationToken);
-        state.RuleViolationsStored = await ruleResultRepository.AddMissingAsync(violationBatch, cancellationToken);
+        var sync = await ruleResultRepository.SyncAsync(state.Winners.Values.ToList(), violationBatch, cancellationToken);
+        state.RuleViolationsStored = sync.Inserted;
+        state.RuleViolationsRemoved = sync.Removed;
 
         // Alerts come last: they derive from episodes, which exist only once every series is scanned.
         state.RecordAlerting(await alertingService.ProcessAsync(state.EpisodeResults, cancellationToken));
@@ -189,7 +191,7 @@ public class IngestionService(
                   rule evaluations performed .... {report.RuleEvaluationsPerformed}
                   acceptable readings ........... {report.AcceptableReadings}
                   unacceptable readings ......... {report.UnacceptableReadings}
-                  rule violations ............... {report.RuleViolations} ({report.RuleViolationsStored} newly stored)
+                  rule violations ............... {report.RuleViolations} ({report.RuleViolationsStored} newly stored, {report.RuleViolationsRemoved} stale removed)
                   sustained episodes ............ {report.SustainedEpisodes}
                   alerts generated .............. {report.AlertsGenerated} ({report.AlertsStored} newly stored, {report.EpisodesSuppressed} episodes suppressed by cooldown)
                 """;

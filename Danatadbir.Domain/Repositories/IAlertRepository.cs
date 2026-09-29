@@ -10,6 +10,4 @@ public interface IAlertRepository
         CancellationToken cancellationToken = default);
 
     Task<int> AddMissingAsync(IReadOnlyCollection<Alert> alerts, CancellationToken cancellationToken = default);
-
-    Task<int> CountAsync(CancellationToken cancellationToken = default);
 }
