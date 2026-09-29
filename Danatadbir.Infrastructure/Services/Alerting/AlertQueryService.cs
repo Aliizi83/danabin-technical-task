@@ -1,6 +1,7 @@
 using System.Net;
 using Danatadbir.Application.AlertService;
 using Danatadbir.Application.AlertService.Dtos;
+using Danatadbir.Application.Common;
 using Danatadbir.Application.Common.Result;
 using Danatadbir.Domain.Repositories;
 
@@ -11,8 +12,6 @@ public class AlertQueryService(
     IMetricRepository metricRepository,
     IAlertRepository alertRepository) : IAlertQueryService
 {
-    private const int MaxPageSize = 1000;
-
     public async Task<BaseResult<List<AlertDto>>> GetAsync(
         string? deviceId,
         string? metric,
@@ -23,11 +22,8 @@ public class AlertQueryService(
         int pageSize,
         CancellationToken cancellationToken = default)
     {
-        if (page < 1 || pageSize is < 1 or > MaxPageSize)
-        {
-            return BaseResult<List<AlertDto>>.Failure(
-                HttpStatusCode.BadRequest, $"page must be at least 1 and pageSize between 1 and {MaxPageSize}.");
-        }
+        if (Paging.Validate(page, pageSize) is { } error)
+            return BaseResult<List<AlertDto>>.Failure(HttpStatusCode.BadRequest, error);
 
         string? sensorId = null;
         string? metricKey = null;
@@ -56,15 +52,18 @@ public class AlertQueryService(
             sensorId, metricKey, string.IsNullOrWhiteSpace(ruleId) ? null : ruleId.Trim(),
             ToUtc(from), ToUtc(to), cancellationToken);
 
-        var items = alerts
-            .Skip((page - 1) * pageSize).Take(pageSize)
+        // Ordered by the full key here, not left to the database: two alerts of one rule can start at
+        // the same time on different sensors, and a page boundary must fall the same way every call.
+        var ordered = alerts
+            .OrderBy(alert => alert.StartTs).ThenBy(alert => alert.RuleId)
+            .ThenBy(alert => alert.SensorExternalId, StringComparer.Ordinal).ThenBy(alert => alert.MetricKey, StringComparer.Ordinal)
             .Select(alert => new AlertDto(
                 alert.RuleId, alert.RuleName, alert.SensorExternalId, alert.MetricKey,
                 alert.StartTs, alert.EndTs, alert.PeakValue, alert.ReadingCount))
             .ToList();
 
         return BaseResult<List<AlertDto>>.Ok(
-            items, new PaginationMetaData { PageNumber = page, PageSize = pageSize, TotalCount = alerts.Count });
+            Paging.Slice(ordered, page, pageSize), Paging.Meta(page, pageSize, ordered.Count));
     }
 
     private static DateTime? ToUtc(DateTime? value) => value is null

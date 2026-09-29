@@ -1,4 +1,5 @@
 using System.Net;
+using Danatadbir.Application.Common;
 using Danatadbir.Application.Common.Result;
 using Danatadbir.Application.ReadingService;
 using Danatadbir.Application.ReadingService.Dtos;
@@ -20,7 +21,6 @@ public class ReadingQueryService(
     IRuleResultRepository ruleResultRepository) : IReadingQueryService
 {
     private const int MaxBuckets = 10_000;
-    private const int MaxPageSize = 1000;
 
     private record Target(string Sensor, string Metric, DateTime From, DateTime To);
 
@@ -67,18 +67,19 @@ public class ReadingQueryService(
         if (target is null)
             return BaseResult<List<AcceptableReadingDto>>.Failure(failure!.Value.Status, failure.Value.Message);
 
-        if (PagingError(query.Page, query.PageSize) is { } error)
+        if (Paging.Validate(query.Page, query.PageSize) is { } error)
             return BaseResult<List<AcceptableReadingDto>>.Failure(HttpStatusCode.BadRequest, error);
 
         var (acceptable, _) = await LoadAsync(target, cancellationToken);
 
-        var page = acceptable
+        var ordered = acceptable
             .OrderBy(reading => reading.Timestamp).ThenBy(reading => reading.Seq)
-            .Skip((query.Page - 1) * query.PageSize).Take(query.PageSize)
             .Select(reading => new AcceptableReadingDto(reading.Timestamp, reading.Value, reading.Seq))
             .ToList();
 
-        return BaseResult<List<AcceptableReadingDto>>.Ok(page, Paging(query, acceptable.Count));
+        return BaseResult<List<AcceptableReadingDto>>.Ok(
+            Paging.Slice(ordered, query.Page, query.PageSize),
+            Paging.Meta(query.Page, query.PageSize, ordered.Count));
     }
 
     public async Task<BaseResult<List<UnacceptableReadingDto>>> GetUnacceptableAsync(
@@ -90,7 +91,7 @@ public class ReadingQueryService(
         if (target is null)
             return BaseResult<List<UnacceptableReadingDto>>.Failure(failure!.Value.Status, failure.Value.Message);
 
-        if (PagingError(query.Page, query.PageSize) is { } error)
+        if (Paging.Validate(query.Page, query.PageSize) is { } error)
             return BaseResult<List<UnacceptableReadingDto>>.Failure(HttpStatusCode.BadRequest, error);
 
         var violations = await ruleResultRepository.GetViolationsAsync(
@@ -106,9 +107,9 @@ public class ReadingQueryService(
                 group.Select(violation => new ViolatedRuleDto(violation.RuleId, violation.RuleName, violation.Reason)).ToList()))
             .ToList();
 
-        var page = readings.Skip((query.Page - 1) * query.PageSize).Take(query.PageSize).ToList();
-
-        return BaseResult<List<UnacceptableReadingDto>>.Ok(page, Paging(query, readings.Count));
+        return BaseResult<List<UnacceptableReadingDto>>.Ok(
+            Paging.Slice(readings, query.Page, query.PageSize),
+            Paging.Meta(query.Page, query.PageSize, readings.Count));
     }
 
     /// <summary>Acceptable readings come from the time-series store minus those with a stored violation.</summary>
@@ -162,14 +163,6 @@ public class ReadingQueryService(
 
         return (new Target(sensor.ExternalId, registeredMetric.Key, from, to), null);
     }
-
-    private static string? PagingError(int page, int pageSize) =>
-        page < 1 ? "page must be at least 1."
-        : pageSize is < 1 or > MaxPageSize ? $"pageSize must be between 1 and {MaxPageSize}."
-        : null;
-
-    private static PaginationMetaData Paging(ReadingsQueryDto query, int total) =>
-        new() { PageNumber = query.Page, PageSize = query.PageSize, TotalCount = total };
 
     /// <summary>A value without an offset is taken as UTC, like the feed itself.</summary>
     private static DateTime ToUtc(DateTime value) => value.Kind == DateTimeKind.Unspecified
