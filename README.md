@@ -16,7 +16,9 @@ aggregates of the acceptable readings.
 - [Rule model and evaluation policy](#rule-model-and-evaluation-policy)
 - [SustainedAbove: state and ordering](#sustainedabove-state-and-ordering)
 - [Alerting and cooldown](#alerting-and-cooldown)
+- [Acceptable readings and aggregation](#acceptable-readings-and-aggregation)
 - [Processing report](#processing-report)
+- [Tests](#tests)
 - [Trade-offs and known limits](#trade-offs-and-known-limits)
 - [AI tool usage](#ai-tool-usage)
 
@@ -49,6 +51,26 @@ curl -X POST "http://localhost:5080/api/v1/ingestion/run"        # Data/readings
 ```
 
 Running it a second time changes nothing: same report, no new rows.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /api/v1/ingestion/run[?path=]` | Process a feed and return the report |
+| `GET /api/v1/readings/aggregates?deviceId&metric&from&to&bucketSeconds` | Per-bucket count, average, min and max of the **acceptable** readings |
+| `GET /api/v1/readings/acceptable?deviceId&metric&from&to[&page&pageSize]` | The acceptable readings |
+| `GET /api/v1/readings/unacceptable?deviceId&metric&from&to[&page&pageSize]` | The unacceptable readings, with the rules broken and why |
+| `GET /api/v1/alerts[?deviceId&metric&ruleId&from&to&page&pageSize]` | Alerts raised by sustained rules |
+| `GET /api/v1/health` | Dependency health |
+
+```bash
+curl "http://localhost:5080/api/v1/readings/aggregates?deviceId=PUMP-01&metric=vibration&from=2025-06-01T08:00:00Z&to=2025-06-01T08:03:00Z&bucketSeconds=60"
+curl "http://localhost:5080/api/v1/alerts"
+```
+
+Tests need neither Docker nor a database:
+
+```bash
+dotnet test
+```
 
 Credentials in `Docker/` are development-only defaults and can be overridden through the gitignored
 `Docker/.env`.
@@ -96,7 +118,7 @@ key, and the store enforces it:
 | Output | Key | Enforced by |
 | --- | --- | --- |
 | Reading | `(sensor, metric, ts, seq)` | InfluxDB: a point is identified by measurement + tags + timestamp, so `sensor`, `metric` and `seq` are tags and rewriting the same reading overwrites its point |
-| Rule result | `(sensor, metric, ts, seq, rule)` | Unique index in PostgreSQL, plus an insert that skips existing keys |
+| Rule result | `(sensor, metric, ts, seq, rule)` | Unique index in PostgreSQL, plus a sync that inserts missing rows and removes stored ones that no longer hold |
 | Alert | `(rule, sensor, metric, startTs)` | Unique index in PostgreSQL, plus an insert that skips existing keys |
 
 `seq` is a **tag**, not a field, on purpose. The feed contains readings that share
@@ -136,7 +158,21 @@ dictionary of the distinct readings, the same order of memory as a set of keys.
 
 **Order.** The feed is not time-sorted, so nothing depends on file order. Surviving readings are
 processed sorted by `(sensor, metric, event time, seq)`, and the result is identical whether the file
-is in order, shuffled or reversed.
+is in order, shuffled or reversed. The one exception is by definition: when two lines carry the same
+`(sensor, metric, ts, seq)` with *different* values, the later line in the file wins, so reordering
+such a file changes which value survives.
+
+**Re-processing a reading whose value changed.** InfluxDB overwrites the point, so the stored
+violations are kept in step rather than left behind: after evaluation, the rule results of every
+reading in the file are synchronised, inserting missing ones and removing those that no longer hold.
+A reading corrected from `500` to `50` loses its violation and moves to the acceptable list; the
+report shows how many stale rows were removed. Without this a corrected reading would stay excluded
+from the aggregation. (Alerts are different: see below.)
+
+**Logging.** Each bad line is logged as a warning with its line number, reason and detail, up to 20
+individually (`Ingestion:RejectionSampleLimit`) followed by a count of the rest, so a badly broken
+file cannot flood the log. Duplicates are a policy outcome, not a fault, and are only logged at debug.
+Rules that fail to load, sustained episodes, alerts raised and episodes suppressed are logged too.
 
 ## Rule model and evaluation policy
 
@@ -260,12 +296,52 @@ episode whose alert already exists is recognised as such, not suppressed, and no
 On the supplied feed the five sustained episodes become four alerts: the second `PUMP-02` episode of
 `pump02-overheating-sustained` starts 3 min 40 s after the first and is suppressed.
 
+## Acceptable readings and aggregation
+
+A stored reading is **unacceptable** when it has at least one stored rule violation and **acceptable**
+otherwise, so the two lists partition the stored readings. Acceptable readings are read from InfluxDB
+minus those with a violation in PostgreSQL; unacceptable ones come from the violation rows, which
+carry the rule, its name and the reason.
+
+`GET /api/v1/readings/aggregates` takes `deviceId`, `metric`, `from`, `to` and `bucketSeconds` and
+returns, per bucket, its `start`, `count`, `average`, `min` and `max`, computed **over acceptable
+readings only**. Unacceptable readings never reach it. The response also says how many readings it
+used (`acceptableReadings`) and how many it left out (`excludedUnacceptable`).
+
+```json
+{
+  "deviceId": "PUMP-01", "metric": "vibration", "bucketSeconds": 60,
+  "acceptableReadings": 8, "excludedUnacceptable": 10,
+  "buckets": [
+    { "start": "2025-06-01T08:00:00Z", "count": 6, "average": 0.199, "min": 0.04,  "max": 0.336 },
+    { "start": "2025-06-01T08:01:00Z", "count": 2, "average": 0.175, "min": 0.165, "max": 0.186 }
+  ]
+}
+```
+
+Behaviour, each point deliberately chosen:
+
+- Buckets are equally sized and **start at `from`**, not at a calendar boundary: bucket *i* covers
+  `[from + i·size, from + (i+1)·size)`.
+- The range is **half-open**, `[from, to)`. A reading exactly at `to` is outside it; one exactly on a
+  bucket boundary belongs to the later bucket. If the range is not a whole number of buckets, the last
+  one is cut off at `to`.
+- **Empty buckets are omitted**, not reported with a count of zero: a zero-count bucket has no average,
+  minimum or maximum to report. In the example above the third minute holds only unacceptable readings
+  and is absent.
+- A value without an offset is read as UTC; `deviceId` and `metric` are case-insensitive and echoed in
+  their registered spelling.
+- Bad input is answered with a status, not an exception: `400` for a missing parameter, `from >= to`,
+  a non-positive `bucketSeconds` or a range that would make more than 10,000 buckets; `404` for an
+  unregistered sensor or metric.
+
 ## Processing report
 
-Every run returns the report and logs it as one block. All counts come from the real input:
+Every run returns the report and logs it as one block. All counts come from the real input. This is
+the first run on an empty database:
 
 ```
-Processing report for Data/readings.jsonl (780 ms)
+Processing report for Data/readings.jsonl (835 ms)
   total lines read .............. 2150
   parsed readings ............... 2142
   stored readings ............... 2104
@@ -275,17 +351,49 @@ Processing report for Data/readings.jsonl (780 ms)
   rule evaluations performed .... 2525
   acceptable readings ........... 2004
   unacceptable readings ......... 100
-  rule violations ............... 101 (0 newly stored)
+  rule violations ............... 101 (101 newly stored, 0 stale removed)
   sustained episodes ............ 5
   alerts generated .............. 4 (4 newly stored, 1 episodes suppressed by cooldown)
 ```
 
-"Newly stored" is what makes idempotency visible: on a second run every line above is unchanged
-except the `newly stored` figures, which drop to `0`. Rejections, sustained episodes, alerts raised
-and suppressions are also logged individually at appropriate levels.
+The second run of the same file differs in exactly two places, which is how idempotency shows up:
+
+```
+  rule violations ............... 101 (0 newly stored, 0 stale removed)
+  alerts generated .............. 4 (0 newly stored, 1 episodes suppressed by cooldown)
+```
+
+`newly stored` is what was written; everything else describes the input and is unchanged. The stores
+hold 2,104 points, 101 rule results and 4 alerts after the first run and after the second.
 
 `rule evaluations performed` counts stateless evaluations: one per applicable rule per reading.
 Sustained rules are counted as episodes instead, since they have no per-reading evaluation.
+`invalid records rejected` is the sum of the three rejection reasons; duplicates are reported
+separately, because removing a duplicate is not a data-quality failure.
+
+## Tests
+
+`dotnet test` runs the suite (230 tests, under a second, no database or Docker needed).
+
+| Area the task names | Where | What it pins down |
+| --- | --- | --- |
+| Deduplication | `IngestionServiceTests` | last wins; the survivor is the one evaluated; same `ts` with a different `seq` stays distinct; case-insensitive sensor and metric collapse into one series |
+| Rule evaluation | `OperatorTests`, `RuleEvaluationServiceTests`, `RuleCatalogTests` | every boundary of every operator; applicability by metric and device; disabled rules; classification and the no-rule policy; invalid rules rejected at load |
+| `SustainedAbove` with out-of-order data | `SustainedAboveTests`, `IngestionServiceTests` | shuffled and reversed input give the same episodes; ordering is by event time, not `seq`; open, gapped, tied and lone-spike stretches; a file in any order gives the same outcome |
+| Alert cooldown | `CooldownPlannerTests`, `AlertingPipelineTests` | window edges (299 s vs 300 s); per-rule cooldown; per sensor; alerts stored by earlier files; a late episode before a stored alert; the invariant that no two alerts of a key are nearer than the cooldown, checked on random input |
+| Idempotent re-run | `IdempotencyTests` | the same file twice, ten times, or shuffled leaves readings, rule results and alerts exactly as one run did; a corrected reading updates its violations instead of duplicating them |
+| Aggregation | `TimeBucketAggregatorTests`, `ReadingQueryServiceTests` | bucket alignment, half-open range, empty buckets, and that unacceptable readings never move the count, average, min or max |
+
+The pipeline tests drive the real services against in-memory stores that enforce the **same natural
+keys** as the databases (an InfluxDB point identity, the PostgreSQL unique indexes), so an
+idempotency test says here what it would say against the databases. The database-backed behaviour was
+checked separately against the running stack: two consecutive runs on an empty database, and the
+aggregation output compared with an independent calculation.
+
+The tests were also checked the other way round: breaking the code on purpose (`>` for `>=`, first-wins
+instead of last-wins, a one-directional cooldown window, unacceptable readings left in the aggregate)
+and confirming a test fails. Two gaps this exposed in the first draft, a series whose `seq` always
+grew with time and an untested tolerance boundary, were closed.
 
 ## Trade-offs and known limits
 
@@ -301,6 +409,9 @@ Sustained rules are counted as episodes instead, since they have no per-reading 
   because every write is keyed and idempotent.
 - **No plausibility bounds.** Any finite number is a valid reading; catching an absurd value such as
   `1000000` or the `-9999` sentinel is the job of the rules, not of validation.
+- **Classification is read across two stores.** Acceptable readings come from InfluxDB minus the
+  violations held in PostgreSQL. Between an ingestion writing one store and the other, a query can
+  briefly see them out of step; re-running the file settles it.
 - **Blank lines** are skipped and not counted in `total lines read`.
 - The `?path=` parameter of the ingestion endpoint accepts any readable path. That suits this local
   task and would be restricted to an allow-listed directory in a deployed service.
