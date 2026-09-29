@@ -45,6 +45,9 @@ public class RuleCatalog : IRuleCatalog
         {
             var result = RuleDefinitionBinder.Bind(definition, operatorsByKey);
 
+            if (result.Rule is not null && _rules.Any(existing => existing.Id == result.Rule.Id))
+                result = RuleDefinitionBinder.BindResult.Failed($"id '{result.Rule.Id}' is already used by an earlier rule");
+
             if (result.Rule is not null)
             {
                 foreach (var warning in result.Warnings)
