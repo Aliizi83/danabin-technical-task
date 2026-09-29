@@ -42,8 +42,8 @@ public class InfluxSensorDataRepository(IInfluxDBClient client, IOptions<InfluxD
                     from(bucket: "{_options.Bucket}")
                       |> range(start: {from:o}, stop: {to:o})
                       |> filter(fn: (r) => r._measurement == "{Measurement}")
-                      |> filter(fn: (r) => r.{SensorTag} == "{sensorExternalId}")
-                      |> filter(fn: (r) => r.{MetricTag} == "{metricKey}")
+                      |> filter(fn: (r) => r.{SensorTag} == "{Escape(sensorExternalId)}")
+                      |> filter(fn: (r) => r.{MetricTag} == "{Escape(metricKey)}")
                       |> filter(fn: (r) => r._field == "{ValueField}")
                     """;
 
@@ -59,6 +59,8 @@ public class InfluxSensorDataRepository(IInfluxDBClient client, IOptions<InfluxD
                 long.TryParse(record.GetValueByKey(SeqTag)?.ToString(), out var seq) ? seq : 0))
             .ToList();
     }
+
+    private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
     private static PointData ToPoint(SensorData reading) =>
         PointData
