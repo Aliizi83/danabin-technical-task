@@ -1,8 +1,7 @@
+using Danatadbir.Domain.Alerting;
 using Danatadbir.Domain.Entities;
 
 namespace Danatadbir.Domain.Repositories;
-
-public record AlertSeriesKey(string RuleId, string SensorExternalId, string MetricKey);
 
 public interface IAlertRepository
 {

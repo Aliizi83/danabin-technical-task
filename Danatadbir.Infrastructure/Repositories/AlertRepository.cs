@@ -1,3 +1,4 @@
+using Danatadbir.Domain.Alerting;
 using Danatadbir.Domain.Entities;
 using Danatadbir.Domain.Repositories;
 using Danatadbir.Infrastructure.Persistence;
