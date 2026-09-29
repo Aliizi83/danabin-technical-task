@@ -30,9 +30,9 @@ public class Rule
 
     public required IOperatorParameters Parameters { get; init; }
 
-    public bool AppliesTo(SensorData reading) =>
+    public bool AppliesTo(string sensorExternalId, string metricKey) =>
         Enabled
-        && string.Equals(Metric, reading.MetricKey, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(Metric, metricKey, StringComparison.OrdinalIgnoreCase)
         && (DeviceId is null
-            || string.Equals(DeviceId, reading.SensorExternalId, StringComparison.OrdinalIgnoreCase));
+            || string.Equals(DeviceId, sensorExternalId, StringComparison.OrdinalIgnoreCase));
 }

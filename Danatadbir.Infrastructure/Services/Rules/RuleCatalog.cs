@@ -72,13 +72,7 @@ public class RuleCatalog : IRuleCatalog
     public IReadOnlyList<RejectedRule> RejectedRules => _rejected;
 
     public IReadOnlyList<Rule> RulesFor(string sensorExternalId, string metricKey) =>
-        _rules
-            .Where(rule =>
-                rule.Enabled
-                && string.Equals(rule.Metric, metricKey, StringComparison.OrdinalIgnoreCase)
-                && (rule.DeviceId is null
-                    || string.Equals(rule.DeviceId, sensorExternalId, StringComparison.OrdinalIgnoreCase)))
-            .ToList();
+        _rules.Where(rule => rule.AppliesTo(sensorExternalId, metricKey)).ToList();
 
     private static string ResolvePath(string path, IHostEnvironment environment)
     {
