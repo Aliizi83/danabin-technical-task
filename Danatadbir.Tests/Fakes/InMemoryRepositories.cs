@@ -43,6 +43,7 @@ public class InMemorySensorDataRepository : ISensorDataRepository
         Task.FromResult(Points.Values
             .Where(r => r.SensorExternalId == sensorExternalId && r.MetricKey == metricKey
                         && r.Timestamp >= from && r.Timestamp < to)
+            .OrderBy(_ => Random.Shared.Next())      // InfluxDB returns one table per tag set, in no useful order
             .ToList());
 }
 
@@ -79,6 +80,7 @@ public class InMemoryRuleResultRepository : IRuleResultRepository
         Task.FromResult(Rows
             .Where(r => r.SensorExternalId == sensorExternalId && r.MetricKey == metricKey
                         && r.Timestamp >= from && r.Timestamp < to)
+            .OrderBy(_ => Random.Shared.Next())
             .ToList());
 
     private static (string, string, DateTime, long, string) Key(RuleResult r) =>
@@ -113,7 +115,8 @@ public class InMemoryAlertRepository : IAlertRepository
             .Where(a => ruleId is null || a.RuleId == ruleId)
             .Where(a => from is null || a.StartTs >= from)
             .Where(a => to is null || a.StartTs < to)
-            .OrderBy(a => a.StartTs).ToList());
+            .OrderBy(_ => Random.Shared.Next())      // no order is guaranteed, as with a database given no full key
+            .ToList());
 
     private static (string, string, string, DateTime) Key(Alert a) => (a.RuleId, a.SensorExternalId, a.MetricKey, a.StartTs);
 }
