@@ -90,7 +90,8 @@
         "threshold": 73.0,
         "durationSeconds": 60,
         "maxGapSeconds": 30
-      }
+      },
+      "alertCooldownSeconds": 300
     },
     {
       "id": "temperature-sustained-fleet",

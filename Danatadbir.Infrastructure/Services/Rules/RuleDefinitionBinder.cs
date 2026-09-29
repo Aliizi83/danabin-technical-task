@@ -48,7 +48,18 @@ internal static class RuleDefinitionBinder
         if (errors.Count > 0)
             return BindResult.Failed($"operatorParameters are invalid: {string.Join("; ", errors)}");
 
-        return BindResult.Succeeded(new Rule
+        if (definition.AlertCooldownSeconds is < 0)
+            return BindResult.Failed("alertCooldownSeconds must not be negative");
+
+        var warnings = new List<string>();
+
+        if (definition.AlertCooldownSeconds is not null && ruleOperator is not ISeriesRuleOperator)
+        {
+            warnings.Add(
+                $"alertCooldownSeconds is ignored: operator '{definition.Operator}' is stateless and raises no alerts");
+        }
+
+        var rule = new Rule
         {
             Id = definition.Id.Trim(),
             Name = definition.Name.Trim(),
@@ -56,14 +67,19 @@ internal static class RuleDefinitionBinder
             DeviceId = string.IsNullOrWhiteSpace(definition.DeviceId) ? null : definition.DeviceId.Trim(),
             Operator = ruleOperator,
             Enabled = definition.Enabled,
-            Parameters = parameters
-        });
+            Parameters = parameters,
+            AlertCooldown = definition.AlertCooldownSeconds is { } seconds
+                ? TimeSpan.FromSeconds(seconds)
+                : Rule.DefaultAlertCooldown
+        };
+
+        return BindResult.Succeeded(rule, warnings);
     }
 
-    public readonly record struct BindResult(Rule? Rule, string? Error)
+    public readonly record struct BindResult(Rule? Rule, string? Error, IReadOnlyList<string> Warnings)
     {
-        public static BindResult Succeeded(Rule rule) => new(rule, null);
+        public static BindResult Succeeded(Rule rule, IReadOnlyList<string> warnings) => new(rule, null, warnings);
 
-        public static BindResult Failed(string error) => new(null, error);
+        public static BindResult Failed(string error) => new(null, error, []);
     }
 }

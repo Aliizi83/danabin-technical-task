@@ -47,6 +47,9 @@ public class RuleCatalog : IRuleCatalog
 
             if (result.Rule is not null)
             {
+                foreach (var warning in result.Warnings)
+                    logger.LogWarning("Rule {RuleId}: {Warning}", result.Rule.Id, warning);
+
                 _rules.Add(result.Rule);
                 continue;
             }

@@ -30,6 +30,9 @@ public class RuleDefinitionDto
     [JsonPropertyName("enabled")]
     public bool Enabled { get; set; } = true;
 
+    [JsonPropertyName("alertCooldownSeconds")]
+    public int? AlertCooldownSeconds { get; set; }
+
     [JsonPropertyName("operatorParameters")]
     public JsonElement? OperatorParameters { get; set; }
 }
