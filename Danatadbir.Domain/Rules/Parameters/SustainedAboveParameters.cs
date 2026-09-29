@@ -11,6 +11,12 @@ public record SustainedAboveParameters : IOperatorParameters
     /// <summary>Minimum length of the above-threshold stretch, measured in event time.</summary>
     public int? DurationSeconds { get; init; }
 
+    /// <summary>
+    /// Longest silence tolerated between two above-threshold readings. Beyond it the stretch is
+    /// broken, because nothing was observed in between. Omitted means any gap is tolerated.
+    /// </summary>
+    public int? MaxGapSeconds { get; init; }
+
     public IReadOnlyList<string> Validate()
     {
         var errors = new List<string>();
@@ -25,10 +31,15 @@ public record SustainedAboveParameters : IOperatorParameters
         else if (DurationSeconds <= 0)
             errors.Add("durationSeconds must be greater than zero");
 
+        if (MaxGapSeconds is <= 0)
+            errors.Add("maxGapSeconds must be greater than zero when given");
+
         return errors;
     }
 
     public double Limit => Threshold!.Value;
 
     public TimeSpan MinimumDuration => TimeSpan.FromSeconds(DurationSeconds!.Value);
+
+    public TimeSpan? MaximumGap => MaxGapSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : null;
 }

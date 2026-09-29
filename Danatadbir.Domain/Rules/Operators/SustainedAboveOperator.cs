@@ -30,6 +30,16 @@ public class SustainedAboveOperator : SeriesRuleOperator<SustainedAboveParameter
         {
             if (reading.Value > parameters.Limit)
             {
+                // A silence longer than the tolerated gap ends the stretch: the metric may well
+                // have dropped in the meantime and there is no reading to say otherwise.
+                if (start is not null && reading.Timestamp - lastAbove > parameters.MaximumGap)
+                {
+                    AddIfQualified(episodes, start, lastAbove, peak, count, parameters);
+                    start = null;
+                    peak = double.NegativeInfinity;
+                    count = 0;
+                }
+
                 start ??= reading.Timestamp;
                 lastAbove = reading.Timestamp;
                 peak = Math.Max(peak, reading.Value);

@@ -88,7 +88,8 @@
       "enabled": true,
       "operatorParameters": {
         "threshold": 73.0,
-        "durationSeconds": 60
+        "durationSeconds": 60,
+        "maxGapSeconds": 30
       }
     },
     {
@@ -100,7 +101,8 @@
       "enabled": true,
       "operatorParameters": {
         "threshold": 70.5,
-        "durationSeconds": 60
+        "durationSeconds": 60,
+        "maxGapSeconds": 30
       }
     },
     {
