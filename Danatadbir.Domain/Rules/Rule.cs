@@ -12,7 +12,9 @@ public class Rule
 
     public string? DeviceId { get; init; }
 
-    public required string Operator { get; init; }
+    public required IRuleOperator Operator { get; init; }
+
+    public string OperatorKey => Operator.Key;
 
     public bool Enabled { get; init; } = true;
 
