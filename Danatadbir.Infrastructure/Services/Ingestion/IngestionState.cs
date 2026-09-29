@@ -26,6 +26,8 @@ internal sealed class IngestionState(int sampleLimit)
     private int _unacceptable;
     private int _violations;
 
+    private readonly List<EpisodeSampleDto> _episodes = [];
+
     public void Reject(int lineNumber, RejectionReason reason, string detail)
     {
         switch (reason)
@@ -68,6 +70,22 @@ internal sealed class IngestionState(int sampleLimit)
         }
     }
 
+    public void RecordEpisodes(IReadOnlyList<RuleEpisodeDto> episodes)
+    {
+        foreach (var episode in episodes)
+        {
+            _episodes.Add(new EpisodeSampleDto(
+                episode.RuleId,
+                episode.SensorExternalId,
+                episode.MetricKey,
+                episode.Episode.StartTs,
+                episode.Episode.EndTs,
+                episode.Episode.Duration.TotalSeconds,
+                episode.Episode.PeakValue,
+                episode.Episode.ReadingCount));
+        }
+    }
+
     public IngestionReportDto ToReport(string source, double durationMs, int rulesLoaded, int rulesRejected) => new()
     {
         Source = source,
@@ -85,8 +103,10 @@ internal sealed class IngestionState(int sampleLimit)
         UnacceptableReadings = _unacceptable,
         RuleViolations = _violations,
         RuleViolationsStored = RuleViolationsStored,
+        SustainedEpisodes = _episodes.Count,
         DurationMs = durationMs,
         RejectionSamples = _rejectionSamples,
-        ViolationSamples = _violationSamples
+        ViolationSamples = _violationSamples,
+        Episodes = _episodes
     };
 }

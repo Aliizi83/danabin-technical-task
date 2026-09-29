@@ -22,6 +22,7 @@ public static class BindApplicationServices
 
         services.AddSingleton<IRuleCatalog, RuleCatalog>();
         services.AddScoped<IRuleEvaluationService, RuleEvaluationService>();
+        services.AddScoped<IEpisodeDetectionService, EpisodeDetectionService>();
 
         return services;
     }

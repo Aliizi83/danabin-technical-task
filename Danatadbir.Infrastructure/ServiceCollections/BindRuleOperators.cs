@@ -14,6 +14,7 @@ public static class BindRuleOperators
         services.AddSingleton<IRuleOperator, LessThanOrEqualOperator>();
         services.AddSingleton<IRuleOperator, EqualOperator>();
         services.AddSingleton<IRuleOperator, BetweenOperator>();
+        services.AddSingleton<IRuleOperator, SustainedAboveOperator>();
 
         return services;
     }

@@ -19,10 +19,13 @@ public record IngestionReportDto
     public int UnacceptableReadings { get; init; }
     public int RuleViolations { get; init; }
     public int RuleViolationsStored { get; init; }
+    public int SustainedEpisodes { get; init; }
 
     public double DurationMs { get; init; }
 
     public IReadOnlyList<RejectedLineDto> RejectionSamples { get; init; } = [];
 
     public IReadOnlyList<ViolationSampleDto> ViolationSamples { get; init; } = [];
+
+    public IReadOnlyList<EpisodeSampleDto> Episodes { get; init; } = [];
 }

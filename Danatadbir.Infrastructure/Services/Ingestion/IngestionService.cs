@@ -4,6 +4,7 @@ using Danatadbir.Application.Common.Result;
 using Danatadbir.Application.IngestionService;
 using Danatadbir.Application.IngestionService.Dtos;
 using Danatadbir.Application.RuleService;
+using Danatadbir.Application.RuleService.Dtos;
 using Danatadbir.Domain.Entities;
 using Danatadbir.Domain.Repositories;
 using Microsoft.Extensions.Logging;
@@ -19,6 +20,7 @@ public class IngestionService(
     IRuleResultRepository ruleResultRepository,
     IRuleCatalog ruleCatalog,
     IRuleEvaluationService ruleEvaluationService,
+    IEpisodeDetectionService episodeDetectionService,
     IOptions<IngestionOptions> options,
     ILogger<IngestionService> logger) : IIngestionService
 {
@@ -94,12 +96,28 @@ public class IngestionService(
         var readingBatch = new List<SensorData>(_options.WriteBatchSize);
         var violationBatch = new List<RuleResult>();
 
+        // Readings are walked in (sensor, metric, event time, seq) order, so a series can be
+        // accumulated as we go and handed to the stateful pass the moment it is complete.
+        var series = new List<SensorData>();
+        (string Sensor, string Metric)? currentSeries = null;
+
         foreach (var reading in state.Winners.Values
                      .OrderBy(value => value.SensorExternalId)
                      .ThenBy(value => value.MetricKey)
                      .ThenBy(value => value.Timestamp)
                      .ThenBy(value => value.Seq))
         {
+            var key = (reading.SensorExternalId, reading.MetricKey);
+
+            if (currentSeries is not null && currentSeries != key)
+            {
+                state.RecordEpisodes(DetectEpisodes(currentSeries.Value, series));
+                series.Clear();
+            }
+
+            currentSeries = key;
+            series.Add(reading);
+
             var evaluation = ruleEvaluationService.Evaluate(reading);
             state.RecordEvaluation(evaluation);
 
@@ -124,6 +142,9 @@ public class IngestionService(
                 state.StoredReadings += await FlushReadingsAsync(readingBatch, cancellationToken);
         }
 
+        if (currentSeries is not null)
+            state.RecordEpisodes(DetectEpisodes(currentSeries.Value, series));
+
         state.StoredReadings += await FlushReadingsAsync(readingBatch, cancellationToken);
         state.RuleViolationsStored = await ruleResultRepository.AddMissingAsync(violationBatch, cancellationToken);
 
@@ -143,8 +164,22 @@ public class IngestionService(
             report.RuleEvaluationsPerformed, report.RulesLoaded, report.AcceptableReadings,
             report.UnacceptableReadings, report.RuleViolations, report.RuleViolationsStored);
 
+        foreach (var episode in report.Episodes)
+        {
+            logger.LogWarning(
+                "Sustained episode: rule {RuleId} on {Sensor}/{Metric} from {StartTs:o} to {EndTs:o} "
+                + "({DurationSeconds:F0}s, peak {PeakValue}, {ReadingCount} readings)",
+                episode.RuleId, episode.SensorExternalId, episode.MetricKey, episode.StartTs,
+                episode.EndTs, episode.DurationSeconds, episode.PeakValue, episode.ReadingCount);
+        }
+
         return BaseResult<IngestionReportDto>.Ok(report);
     }
+
+    private IReadOnlyList<RuleEpisodeDto> DetectEpisodes(
+        (string Sensor, string Metric) key,
+        List<SensorData> series) =>
+        episodeDetectionService.Detect(key.Sensor, key.Metric, series);
 
     private async Task<int> FlushReadingsAsync(List<SensorData> batch, CancellationToken cancellationToken)
     {
