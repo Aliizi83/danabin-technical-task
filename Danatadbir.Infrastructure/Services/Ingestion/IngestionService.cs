@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using Danatadbir.Application.AlertService;
 using Danatadbir.Application.Common.Result;
 using Danatadbir.Application.IngestionService;
 using Danatadbir.Application.IngestionService.Dtos;
@@ -21,6 +22,7 @@ public class IngestionService(
     IRuleCatalog ruleCatalog,
     IRuleEvaluationService ruleEvaluationService,
     IEpisodeDetectionService episodeDetectionService,
+    IAlertingService alertingService,
     IOptions<IngestionOptions> options,
     ILogger<IngestionService> logger) : IIngestionService
 {
@@ -151,32 +153,46 @@ public class IngestionService(
         state.StoredReadings += await FlushReadingsAsync(readingBatch, cancellationToken);
         state.RuleViolationsStored = await ruleResultRepository.AddMissingAsync(violationBatch, cancellationToken);
 
+        // Alerts come last: they derive from episodes, which exist only once every series is scanned.
+        state.RecordAlerting(await alertingService.ProcessAsync(state.EpisodeResults, cancellationToken));
+
         stopwatch.Stop();
         var report = state.ToReport(
             source, stopwatch.Elapsed.TotalMilliseconds, ruleCatalog.Rules.Count, ruleCatalog.RejectedRules.Count);
 
-        logger.LogInformation(
-            "Ingestion of {Source} finished in {DurationMs:F0} ms: {Read} lines read, {Stored} stored, "
-            + "{Duplicates} duplicates, {Malformed} malformed, {Invalid} invalid, {Unknown} unknown sensor/metric",
-            report.Source, report.DurationMs, report.TotalLinesRead, report.StoredReadings,
-            report.DuplicatesRemoved, report.MalformedLines, report.InvalidRecords, report.UnknownSensorOrMetric);
-
-        logger.LogInformation(
-            "Rule evaluation: {Evaluations} evaluations over {Rules} rules, {Acceptable} acceptable, "
-            + "{Unacceptable} unacceptable, {Violations} violations ({StoredViolations} newly stored)",
-            report.RuleEvaluationsPerformed, report.RulesLoaded, report.AcceptableReadings,
-            report.UnacceptableReadings, report.RuleViolations, report.RuleViolationsStored);
-
         foreach (var episode in report.Episodes)
         {
-            logger.LogWarning(
+            logger.LogInformation(
                 "Sustained episode: rule {RuleId} on {Sensor}/{Metric} from {StartTs:o} to {EndTs:o} "
                 + "({DurationSeconds:F0}s, peak {PeakValue}, {ReadingCount} readings)",
                 episode.RuleId, episode.SensorExternalId, episode.MetricKey, episode.StartTs,
                 episode.EndTs, episode.DurationSeconds, episode.PeakValue, episode.ReadingCount);
         }
 
+        logger.LogInformation("{Report}", FormatReport(report));
+
         return BaseResult<IngestionReportDto>.Ok(report);
+    }
+
+    private static string FormatReport(IngestionReportDto report)
+    {
+        var rejected = report.MalformedLines + report.InvalidRecords + report.UnknownSensorOrMetric;
+
+        return $"""
+                Processing report for {report.Source} ({report.DurationMs:F0} ms)
+                  total lines read .............. {report.TotalLinesRead}
+                  parsed readings ............... {report.ParsedReadings}
+                  stored readings ............... {report.StoredReadings}
+                  duplicates removed ............ {report.DuplicatesRemoved}
+                  invalid records rejected ...... {rejected} ({report.MalformedLines} malformed, {report.InvalidRecords} invalid, {report.UnknownSensorOrMetric} unknown sensor/metric)
+                  rules loaded .................. {report.RulesLoaded} ({report.RulesRejected} rejected)
+                  rule evaluations performed .... {report.RuleEvaluationsPerformed}
+                  acceptable readings ........... {report.AcceptableReadings}
+                  unacceptable readings ......... {report.UnacceptableReadings}
+                  rule violations ............... {report.RuleViolations} ({report.RuleViolationsStored} newly stored)
+                  sustained episodes ............ {report.SustainedEpisodes}
+                  alerts generated .............. {report.AlertsGenerated} ({report.AlertsStored} newly stored, {report.EpisodesSuppressed} episodes suppressed by cooldown)
+                """;
     }
 
     private IReadOnlyList<RuleEpisodeDto> DetectEpisodes(

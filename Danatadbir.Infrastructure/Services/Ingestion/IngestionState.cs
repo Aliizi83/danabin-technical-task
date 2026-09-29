@@ -1,3 +1,4 @@
+using Danatadbir.Application.AlertService.Dtos;
 using Danatadbir.Application.IngestionService.Dtos;
 using Danatadbir.Application.RuleService.Dtos;
 using Danatadbir.Domain.Entities;
@@ -27,6 +28,9 @@ internal sealed class IngestionState(int sampleLimit)
     private int _violations;
 
     private readonly List<EpisodeSampleDto> _episodes = [];
+    private AlertingResultDto _alerting = AlertingResultDto.Empty;
+
+    public List<RuleEpisodeDto> EpisodeResults { get; } = [];
 
     public void Reject(int lineNumber, RejectionReason reason, string detail)
     {
@@ -70,8 +74,12 @@ internal sealed class IngestionState(int sampleLimit)
         }
     }
 
+    public void RecordAlerting(AlertingResultDto alerting) => _alerting = alerting;
+
     public void RecordEpisodes(IReadOnlyList<RuleEpisodeDto> episodes)
     {
+        EpisodeResults.AddRange(episodes);
+
         foreach (var episode in episodes)
         {
             _episodes.Add(new EpisodeSampleDto(
@@ -104,9 +112,14 @@ internal sealed class IngestionState(int sampleLimit)
         RuleViolations = _violations,
         RuleViolationsStored = RuleViolationsStored,
         SustainedEpisodes = _episodes.Count,
+        AlertsGenerated = _alerting.AlertsGenerated,
+        AlertsStored = _alerting.AlertsStored,
+        EpisodesSuppressed = _alerting.EpisodesSuppressed,
         DurationMs = durationMs,
         RejectionSamples = _rejectionSamples,
         ViolationSamples = _violationSamples,
-        Episodes = _episodes
+        Episodes = _episodes,
+        Alerts = _alerting.Alerts,
+        SuppressedEpisodes = _alerting.Suppressed
     };
 }

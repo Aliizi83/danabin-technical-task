@@ -1,3 +1,5 @@
+using Danatadbir.Application.AlertService.Dtos;
+
 namespace Danatadbir.Application.IngestionService.Dtos;
 
 public record IngestionReportDto
@@ -21,6 +23,10 @@ public record IngestionReportDto
     public int RuleViolationsStored { get; init; }
     public int SustainedEpisodes { get; init; }
 
+    public int AlertsGenerated { get; init; }
+    public int AlertsStored { get; init; }
+    public int EpisodesSuppressed { get; init; }
+
     public double DurationMs { get; init; }
 
     public IReadOnlyList<RejectedLineDto> RejectionSamples { get; init; } = [];
@@ -28,4 +34,8 @@ public record IngestionReportDto
     public IReadOnlyList<ViolationSampleDto> ViolationSamples { get; init; } = [];
 
     public IReadOnlyList<EpisodeSampleDto> Episodes { get; init; } = [];
+
+    public IReadOnlyList<AlertDto> Alerts { get; init; } = [];
+
+    public IReadOnlyList<SuppressedEpisodeDto> SuppressedEpisodes { get; init; } = [];
 }
