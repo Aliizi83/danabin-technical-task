@@ -1,4 +1,3 @@
-using Asp.Versioning.ApiExplorer;
 using Danatadbir.Api.Middlewares;
 using Danatadbir.Api.ServiceCollections;
 using Danatadbir.Infrastructure.ServiceCollections;
@@ -24,22 +23,23 @@ else
     app.UseHttpsRedirection();
 }
 
+app.MapGet("/", () => Results.Redirect("/swagger", permanent: false)).ExcludeFromDescription();
+
+app.MapControllers();
+app.MapHealthChecks("/health");
+
+// Described after every endpoint is mapped, so minimal APIs are covered too.
+var apiVersions = app.DescribeApiVersions();
+
 app.UseSwagger();
 app.UseSwaggerUI(options =>
 {
-    var provider = app.Services.GetRequiredService<IApiVersionDescriptionProvider>();
-
-    foreach (var description in provider.ApiVersionDescriptions)
+    foreach (var description in apiVersions)
     {
         options.SwaggerEndpoint(
             $"/swagger/{description.GroupName}/swagger.json",
             $"Danatadbir API {description.GroupName}");
     }
 });
-
-app.MapGet("/", () => Results.Redirect("/swagger", permanent: false)).ExcludeFromDescription();
-
-app.MapControllers();
-app.MapHealthChecks("/health");
 
 app.Run();
