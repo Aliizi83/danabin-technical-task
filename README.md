@@ -422,4 +422,4 @@ AI assistance was used in this project: Claude (Anthropic) via Claude Code, for 
 writing implementation and tests, for analysing the sample data, and as a sounding board when
 weighing design options. Design decisions (rule polarity, where the cooldown lives, the symmetric
 cooldown window, last-wins deduplication, keeping raw readings in a time-series store) were
-discussed with the assistant and chosen by me.
+discussed and chosen by me.
