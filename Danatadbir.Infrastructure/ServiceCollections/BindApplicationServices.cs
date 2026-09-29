@@ -1,7 +1,9 @@
 using Danatadbir.Application.Common;
+using Danatadbir.Application.AlertService;
 using Danatadbir.Application.IngestionService;
 using Danatadbir.Application.RuleService;
 using Danatadbir.Infrastructure.Services;
+using Danatadbir.Infrastructure.Services.Alerting;
 using Danatadbir.Infrastructure.Services.Ingestion;
 using Danatadbir.Infrastructure.Services.Rules;
 using Microsoft.Extensions.Configuration;
@@ -23,6 +25,7 @@ public static class BindApplicationServices
         services.AddSingleton<IRuleCatalog, RuleCatalog>();
         services.AddScoped<IRuleEvaluationService, RuleEvaluationService>();
         services.AddScoped<IEpisodeDetectionService, EpisodeDetectionService>();
+        services.AddScoped<IAlertingService, AlertingService>();
 
         return services;
     }
