@@ -1,5 +1,6 @@
 using Danatadbir.Api.Middlewares;
 using Danatadbir.Api.ServiceCollections;
+using Danatadbir.Application.RuleService;
 using Danatadbir.Infrastructure.ServiceCollections;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -11,6 +12,10 @@ builder.Services.AddCors(options => options.AddPolicy("dev", policy =>
     policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader()));
 
 var app = builder.Build();
+
+// The catalog is a lazy singleton; resolving it here makes rules.json load, and any invalid rule
+// get logged, at startup rather than on the first request.
+app.Services.GetRequiredService<IRuleCatalog>();
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
