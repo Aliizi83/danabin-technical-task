@@ -5,13 +5,29 @@ and duplicate records, evaluates the rest against rules loaded from `rules.json`
 stateful `SustainedAbove` operator), raises cooldown-deduplicated alerts, and exposes time-bucketed
 aggregates of the acceptable readings.
 
-.NET 10 · ASP.NET Core · EF Core / PostgreSQL · InfluxDB · Swagger
+.NET 10 · ASP.NET Core · Clean Architecture · EF Core / PostgreSQL · InfluxDB · Swagger · xUnit
+
+## The task at a glance
+
+| # | Deliverable | Where it lives |
+| --- | --- | --- |
+| 1 | Ingestion | `POST /api/v1/ingestion/run`, [Ingestion](#ingestion) |
+| 2 | Storage, justified | PostgreSQL and InfluxDB, [Technology choices](#technology-choices) |
+| 3 | Rules as seed data | `Data/rules.json`, loaded at startup, [Rule model](#rule-model-and-evaluation-policy) |
+| 4 | Rule evaluation | Operators in the Domain layer, [Rule model](#rule-model-and-evaluation-policy) |
+| 5 | Alerting with cooldown | [Alerting and cooldown](#alerting-and-cooldown) |
+| 6 | Acceptable / unacceptable lists | `GET /readings/acceptable`, `GET /readings/unacceptable`, [Aggregation](#acceptable-readings-and-aggregation) |
+| 7 | Aggregation API | `GET /readings/aggregates`, [Aggregation](#acceptable-readings-and-aggregation) |
+| 8 | Idempotent re-run | Natural keys enforced by both stores, [keying strategy](#keying-strategy-for-idempotency), `IdempotencyTests` |
+| 9 | Processing report | Returned by the ingestion call and logged, [Processing report](#processing-report) |
+| 10 | Tests | 267 tests, [Tests](#tests) |
+| 11 | README | this file |
 
 ## Contents
 
 - [Running and testing](#running-and-testing)
 - [Architecture](#architecture)
-- [Storage](#storage)
+- [Technology choices](#technology-choices)
 - [Ingestion](#ingestion)
 - [Rule model and evaluation policy](#rule-model-and-evaluation-policy)
 - [SustainedAbove: state and ordering](#sustainedabove-state-and-ordering)
@@ -24,13 +40,15 @@ aggregates of the acceptable readings.
 
 ## Running and testing
 
-Requirements: .NET 10 SDK, Docker.
+Requirements: .NET 10 SDK and Docker.
 
 ```bash
 # 1. PostgreSQL and InfluxDB
 cd Docker && cp .env.example .env && docker compose up -d && cd ..
 
-# 2. Schema and seed data (4 sensors, 3 metrics)
+# 2. Restore packages, then create the schema and seed data (4 sensors, 3 metrics).
+#    `dotnet ef` does not restore by itself, so on a fresh checkout it needs the first line.
+dotnet restore
 dotnet tool restore
 dotnet ef database update --project Danatadbir.Infrastructure --startup-project Danatadbir.Api
 
@@ -40,9 +58,10 @@ dotnet run --project Danatadbir.Api
 
 | Service | Address | Notes |
 | --- | --- | --- |
-| Swagger UI | http://localhost:5080/swagger | one document per API version |
+| Swagger UI | http://localhost:5080/swagger | one document per API version; `/` redirects here |
 | Health | http://localhost:5080/api/v1/health | PostgreSQL and InfluxDB connectivity |
 | InfluxDB UI | http://localhost:8086 | org `danatadbir`, bucket `sensor_readings`, credentials in `Docker/.env` |
+| PostgreSQL | localhost:5432 | database `danatadbir`, user `core_user` |
 
 Process the supplied feed, then read the results:
 
@@ -61,6 +80,9 @@ Running it a second time changes nothing: same report, no new rows.
 | `GET /api/v1/alerts[?deviceId&metric&ruleId&from&to&page&pageSize]` | Alerts raised by sustained rules |
 | `GET /api/v1/health` | Dependency health |
 
+Of these, only the aggregation endpoint is required by the task; the others exist so that every output
+of the pipeline can be inspected without querying a database.
+
 ```bash
 curl "http://localhost:5080/api/v1/readings/aggregates?deviceId=PUMP-01&metric=vibration&from=2025-06-01T08:00:00Z&to=2025-06-01T08:03:00Z&bucketSeconds=60"
 curl "http://localhost:5080/api/v1/alerts"
@@ -72,43 +94,247 @@ Tests need neither Docker nor a database:
 dotnet test
 ```
 
-Credentials in `Docker/` are development-only defaults and can be overridden through the gitignored
-`Docker/.env`.
+**Configuration.** `dotnet run` uses the `http` launch profile, which sets `ASPNETCORE_ENVIRONMENT=Development`;
+the connection strings live in `Danatadbir.Api/appsettings.Development.json`. Started in any other
+environment the service refuses to boot until they are supplied, for example as environment variables:
+`ConnectionStrings__PostgresConnection`, `InfluxDb__Url`, `InfluxDb__Token`, `InfluxDb__Organization`,
+`InfluxDb__Bucket`. The rules file, the default feed and the batch sizes are under `Rules` and `Ingestion`
+in `appsettings.json`.
+
+**Resetting.** To throw everything away and start clean:
+
+```bash
+cd Docker && docker compose down -v      # removes the containers and both databases' volumes
+```
+
+then repeat steps 1 and 2. Credentials in `Docker/` are development-only defaults, overridable through
+the gitignored `Docker/.env`.
 
 ## Architecture
 
-Clean Architecture in four projects, dependencies pointing inwards only. The layout and conventions
-are carried over from **[Taghsim](https://github.com/Aliizi83/Taghsim)**, a project I built earlier,
-so the effort here goes into the domain problem rather than into structural decisions.
+### Why a layered, Clean Architecture
 
-| Project | Depends on | Holds |
+Clean Architecture has one rule that everything else follows from: **source-code dependencies point
+inwards only.** The inner layers describe *what the system does*: its entities, rules and policies.
+The outer layers decide *how* that is delivered (HTTP, Swagger) and *where* it is kept (PostgreSQL,
+InfluxDB, a file on disk). An inner layer never names anything from an outer one; when it needs
+something from the outside world it declares an **interface (a port)** and lets the outer layer supply
+the **implementation (an adapter)**.
+
+```mermaid
+flowchart LR
+    Api["<b>Danatadbir.Api</b><br/>controllers, Swagger,<br/>composition root"]
+    Infra["<b>Danatadbir.Infrastructure</b><br/>EF Core, InfluxDB, file access,<br/>service implementations"]
+    App["<b>Danatadbir.Application</b><br/>service contracts, DTOs,<br/>result envelope"]
+    Domain["<b>Danatadbir.Domain</b><br/>entities, rules, operators,<br/>cooldown and bucketing policy, ports"]
+    Api --> App
+    Api --> Infra
+    Infra --> App
+    Infra --> Domain
+    App --> Domain
+```
+
+This fits the task closely, and that is the reason to use it here rather than habit:
+
+- The task requires that **domain logic is independent of infrastructure** and that validation,
+  deduplication, applicability, evaluation, state handling, alerting and classification stay out of
+  controllers and repositories.
+- The task names three axes of extension: **new operators, new input sources, new aggregations.** Each
+  one is a seam in the design: an operator is a class registered in one line, an input source is an
+  implementation of `IReadingLineSource`, and an aggregation is a pure function over readings.
+- **Testability.** Because the rule engine, the cooldown policy and the bucketing touch no store, they
+  are tested directly. The pipeline tests replace the stores with in-memory implementations of the
+  same ports, so 267 tests run in about a second with no database or Docker.
+- **Replaceable storage.** Swapping InfluxDB for another store, or the JSON Lines file for another
+  source, changes one adapter and nothing else.
+
+The cost is more files and more indirection than a two-day task strictly needs. I accepted that because
+the design is what the task grades, and because I already had this structure from a previous project.
+
+### The four projects
+
+| Project | Responsibility | References | Contains | Must never contain |
+| --- | --- | --- | --- | --- |
+| **`Danatadbir.Domain`** | The business rules, as they would exist with no database and no web server | nothing (no project reference, no NuGet package) | Entities (`Sensor`, `Metric`, `SensorData`, `RuleResult`, `Alert`); the rule model and its **applicability**; every operator and its parameter type, including the stateful `SustainedAbove`; `CooldownPlanner` (which episodes become alerts); `TimeBucketAggregator`; the **ports** for persistence (`ISensorDataRepository`, `IRuleResultRepository`, `IAlertRepository`, `ISensorRepository`, `IMetricRepository`) | EF attributes, JSON, HTTP, logging, any I/O |
+| **`Danatadbir.Application`** | What the system offers to its callers | Domain (no NuGet package) | Service **contracts** (`IIngestionService`, `IAlertingService`, `IReadingQueryService`, `IAlertQueryService`, `IRuleEvaluationService`, `IEpisodeDetectionService`); the DTOs and the `BaseResult` envelope; the `Paging` helper; ports to non-persistence dependencies (`IReadingLineSource`, `IRuleCatalog`) | Implementations, EF Core, HTTP types |
+| **`Danatadbir.Infrastructure`** | Everything that touches the outside world, plus the orchestration that uses it | Domain, Application | **Adapters:** the EF Core context, configurations, migrations and audit interceptor; the repositories; the InfluxDB reader/writer; the JSON Lines file reader; the `rules.json` loader. **Service implementations:** the ingestion pipeline, rule evaluation, episode detection, alerting and the read-side queries. Health checks and DI registration | Controllers or any HTTP concept |
+| **`Danatadbir.Api`** | Delivery over HTTP | Application, Infrastructure (only to wire it up) | Thin controllers, API versioning, Swagger, the model-validation filter, the exception middleware, and `Program.cs`, the **composition root** | Business logic. A controller calls one service and maps its `BaseResult` to a status code |
+
+`Danatadbir.Tests` references all three inner projects and nothing from `Api`. Domain and Application
+have no NuGet packages at all; that is checked in the `.csproj` files, not just intended.
+
+### Following one request through the layers
+
+`POST /api/v1/ingestion/run`:
+
+1. **Api.** `IngestionController` calls `IIngestionService.IngestAsync` and turns the returned
+   `BaseResult` into a status code. It contains no logic.
+2. **Infrastructure.** `IngestionService` streams lines from `IReadingLineSource` (here the JSON Lines
+   adapter), parses and validates each one, resolves sensor and metric against the seed data, and
+   deduplicates by `(sensor, metric, ts, seq)`.
+3. **Application and Domain.** Each surviving reading is evaluated by `IRuleEvaluationService` using the
+   operators in **Domain**. Each series is scanned for episodes by `SustainedAboveOperator`, also
+   Domain. `CooldownPlanner`, Domain again, decides which episodes become alerts.
+4. **Infrastructure.** The results go out through the ports: readings to InfluxDB
+   (`InfluxSensorDataRepository`), rule results and alerts to PostgreSQL (EF Core repositories).
+5. The report is built and returned back up through the same layers.
+
+`GET /api/v1/readings/aggregates` takes the same road in reverse: `ReadingsController` →
+`IReadingQueryService` → the two repositories → `TimeBucketAggregator` in Domain.
+
+### Ports and adapters
+
+| Port (interface) | Declared in | Adapter | Store or medium |
+| --- | --- | --- | --- |
+| `ISensorDataRepository` | Domain | `InfluxSensorDataRepository` | InfluxDB |
+| `IRuleResultRepository`, `IAlertRepository`, `ISensorRepository`, `IMetricRepository` | Domain | EF Core repositories over `AppDbContext` | PostgreSQL |
+| `IReadingLineSource` | Application | `JsonlFileReadingLineSource` | a JSON Lines file |
+| `IRuleCatalog` | Application | `RuleCatalog` (parses and validates `rules.json`) | a JSON file |
+| `IRuleOperator` and its two branches | Domain | one class per operator | none: a plug-in seam rather than an I/O port |
+
+The same ports are implemented a second time by in-memory fakes in `Danatadbir.Tests/Fakes`, which is
+what lets the whole pipeline run in a unit test.
+
+### Wiring
+
+`Program.cs` is the only place that knows every layer. It calls `AddApiServices` and
+`AddInfrastructureServices`, each of which composes small registration files, one per concern
+(`BindRepositories`, `BindApplicationServices`, `BindRuleOperators`, `AddDbContext`, `AddInfluxDb`,
+`AddHealthChecks`, `Swagger`, `ApiVersioning`). Services and repositories are registered the same way, an
+interface bound to its implementation. Operators are registered as `IRuleOperator` and the rule loader
+receives all of them as one collection, which is why adding an operator needs no change to any
+existing code.
+
+### Conventions inherited from Taghsim
+
+The layout and conventions come from **[Taghsim](https://github.com/Aliizi83/Taghsim)**, a project I built
+earlier, so the effort here goes into the domain problem rather than structural decisions:
+
+- every response is a `BaseResult` / `BaseResult<T>` envelope, mapped to a status code by `BaseController`;
+- registration is split into one file per concern under `ServiceCollections/`;
+- `BaseEntity` carries audit timestamps and soft delete, applied by `AuditSaveChangesInterceptor` and a
+  global query filter;
+- API versioning is in the URL (`/api/v1/...`), with one Swagger document per version;
+- **service implementations live in Infrastructure, not Application.** Application holds the contract
+  and Infrastructure the implementation, bound in DI exactly like a repository.
+
+### A deliberate deviation, and what it costs
+
+That last convention has a consequence worth stating. The textbook places use-case implementations in the
+Application layer. Here they are in Infrastructure, so the orchestration around the rules (the ingestion
+pipeline, the line parser, deduplication, rule evaluation and episode detection) sits next to the
+adapters. The dependency rule still holds, because Infrastructure depends inwards, and none of these
+classes touches a database or a socket: they depend only on ports and on the logging and options
+abstractions. The reason they cannot simply move to Application is that Application has no NuGet
+packages by design, and they use `ILogger` and `IOptions`.
+
+What did go to Domain is the logic that carries the business meaning: what a rule means, which readings
+it covers, how an operator decides, how an episode is found, when an alert is raised or suppressed, and
+how a bucket is computed. If the orchestration were to move, it would move to Application unchanged.
+
+### Extension points
+
+| To add | Do this | Touches existing code? |
 | --- | --- | --- |
-| `Danatadbir.Domain` | — | Entities, rule model, operators, cooldown policy, repository ports |
-| `Danatadbir.Application` | Domain | Service contracts, DTOs, result envelope. No NuGet packages at all |
-| `Danatadbir.Infrastructure` | Domain, Application | Service implementations, EF Core, InfluxDB, DI wiring |
-| `Danatadbir.Api` | Application, Infrastructure | Controllers, Swagger, versioning, filters, middleware |
+| An operator | A parameters record and an operator class, one registration line | No |
+| An input source (another file format, a socket) | Implement `IReadingLineSource`, register it | No |
+| An aggregation | A pure function over `SensorData` in Domain, exposed by a query service | No |
+| A rule | A new entry in `rules.json` | No. The process needs a restart, not a rebuild |
+| A different time-series store | Implement `ISensorDataRepository` | No |
 
-The task requires that validation, deduplication, rule applicability, evaluation, state handling,
-alerting and classification stay out of controllers and repositories. Here the rules and the
-cooldown policy are pure Domain code that touches no store; the orchestration around them lives in
-Infrastructure services behind Application contracts, and controllers only translate HTTP.
+### Solution layout
 
-Conventions inherited from Taghsim: every response is a `BaseResult` / `BaseResult<T>` envelope
-mapped to a status code by `BaseController`; registration is split into one file per concern under
-`ServiceCollections/`; `BaseEntity` carries audit timestamps and soft delete, applied by
-`AuditSaveChangesInterceptor` and a global query filter; API versioning is in the URL (`/api/v1/...`).
+```
+Danatadbir.sln
+├── Data/                                  readings.jsonl (the feed) and rules.json (seed rules)
+├── Docker/                                docker-compose.yml, .env.example, postgres init script
+├── Danatadbir.Domain/
+│   ├── Entities/                          Sensor, Metric, SensorData, RuleResult, Alert, BaseEntity
+│   ├── Rules/                             Rule, IRuleOperator, evaluation and episode types
+│   │   ├── Operators/                     the 7 operators
+│   │   └── Parameters/                    one parameter type per operator, each validating itself
+│   ├── Alerting/                          CooldownPlanner, AlertSeriesKey
+│   ├── Aggregation/                       TimeBucketAggregator
+│   └── Repositories/                      persistence ports
+├── Danatadbir.Application/
+│   ├── IngestionService/  RuleService/  AlertService/  ReadingService/   contracts and DTOs per use case
+│   └── Common/                            BaseResult, PaginationMetaData, Paging, IUnitOfWork
+├── Danatadbir.Infrastructure/
+│   ├── Persistence/                       AppDbContext, Configurations (incl. seed data), Migrations, Interceptors
+│   ├── Repositories/                      EF Core repositories
+│   ├── TimeSeries/                        InfluxSensorDataRepository
+│   ├── Services/                          Ingestion/, Rules/, Alerting/, Readings/ implementations
+│   ├── HealthChecks/  Options/  ServiceCollections/
+├── Danatadbir.Api/
+│   ├── Controllers/V1/                    Ingestion, Readings, Alerts, Health
+│   ├── Filters/  Middlewares/  Swagger/  ServiceCollections/  Program.cs
+└── Danatadbir.Tests/                      Domain, Rules, Ingestion, Alerting, Readings, Fakes
+```
 
-## Storage
+## Technology choices
+
+The task lets the candidate choose the storage engine and asks for the choice to be justified. Two
+stores are used, split by the kind of data they hold:
 
 | Store | Holds | Why |
 | --- | --- | --- |
-| **InfluxDB** | Raw readings | An append-only time series keyed by time. Purpose-built for it, and for the time-bucketed reads the aggregation needs |
-| **PostgreSQL** | Sensors, metrics (seed data), rule results, alerts | Small relational data with real constraints. Unique indexes there are what make re-runs idempotent |
+| **InfluxDB** | Raw readings | The readings are a time series: appended, never edited, addressed by (series, time), read by time range and summarised in time buckets |
+| **PostgreSQL** | Sensors, metrics (seed data), rule results, alerts | Small relational data with real constraints, where a unique index is what guarantees idempotency |
 
-Rules are **not** stored. The task asks for them to be loaded from `rules.json` at startup and rules
-out any management API, so they live in memory, are validated once at startup, and changing the
-file needs a restart. Rule results and alerts therefore refer to a rule by its id alone, with no
-foreign key, and copy the rule name so they stay readable if the file later changes.
+Rules are **not** stored. The task asks for them to be loaded from `rules.json` at startup and rules out
+any management API, so they live in memory, are validated once at startup, and changing the file needs a
+restart. Rule results and alerts therefore refer to a rule by its id alone, with no foreign key, and copy
+the rule name so they stay readable if the file later changes.
+
+### Why PostgreSQL
+
+- **The data is relational and constraint-heavy.** Sensors and metrics are reference data with unique
+  keys; rule results and alerts are derived records with natural keys. A relational database expresses
+  exactly that.
+- **Unique indexes give the idempotency guarantee at the storage level**, not just in application code.
+  `ix_rule_results_reading_rule` and `ix_alerts_rule_series_start` make a second copy impossible even if
+  the code above them were wrong; the alerts index was checked directly by inserting the same key twice.
+- **Schema and seed data are versioned.** EF Core migrations create the tables and insert the four
+  sensors and three metrics, so a fresh database is one command away and the schema evolves in reviewable
+  steps.
+- **Familiarity.** It is the same stack (EF Core with Npgsql) as Taghsim, which keeps the persistence
+  code conventional and lets the effort go into the domain.
+
+The task also allows in-memory storage or SQLite, and for 2,150 readings either would work. I chose
+PostgreSQL to keep the persistence design realistic (constraints, concurrent access, migrations) rather
+than minimal. The price is that running the project needs Docker.
+
+### Why InfluxDB
+
+- **The workload is a time series.** A reading is written once and never changed, belongs to a series
+  (sensor and metric) and to a moment, and is later read back by time range and summarised into buckets.
+  A time-series database is built for that access pattern.
+- **Its data model matches the idempotency requirement.** A point in InfluxDB is identified by its
+  measurement, its tag set and its timestamp, and writing the same identity again overwrites the point.
+  Storing `sensor`, `metric` and `seq` as tags makes the task's own duplicate definition,
+  `(deviceId, metric, ts, seq)`, exactly the identity of a point, so re-running a file rewrites the same
+  points instead of adding new ones.
+- **Room to grow.** Retention policies, downsampling and native windowed aggregation are there if the
+  volume ever justified them.
+
+InfluxDB is used here for storage and for range reads. The bucketing itself is done in the Domain layer
+(`TimeBucketAggregator`) rather than pushed down into a Flux query, so that it is testable without the
+database and does not depend on one. Pushing it down would be the way to scale it.
+
+**Alternatives considered.**
+
+| Option | Verdict |
+| --- | --- |
+| In-memory or SQLite for everything | Allowed by the task and enough for this volume, but it sidesteps the storage question the task asks to be justified |
+| PostgreSQL alone, with a plain table or a time-series extension such as TimescaleDB | A sound, simpler choice with one engine to run. A single store would also give one transaction over readings and results |
+| **CrateDB** | Could have replaced InfluxDB. It is a distributed SQL database that handles time-series and analytical workloads and could have covered both jobs in one engine |
+| **InfluxDB** | **Chosen** |
+
+I could have used CrateDB instead of InfluxDB, and that would have been a legitimate choice. I decided on
+InfluxDB because it is a technology I did not know, and I wanted this task to be a chance to challenge
+myself with a purpose-built time-series database rather than stay with what I already use. It comes with
+real friction: a second query language (Flux), a tag and field data model to learn, and a second store to
+operate. Those costs are listed under [Trade-offs](#trade-offs-and-known-limits).
 
 ### Keying strategy for idempotency
 
@@ -378,12 +604,12 @@ separately, because removing a duplicate is not a data-quality failure.
 
 ## Tests
 
-`dotnet test` runs the suite (263 tests, under a second, no database or Docker needed).
+`dotnet test` runs the suite (267 tests, under a second, no database or Docker needed).
 
 | Area the task names | Where | What it pins down |
 | --- | --- | --- |
 | Deduplication | `IngestionServiceTests` | last wins; the survivor is the one evaluated; same `ts` with a different `seq` stays distinct; case-insensitive sensor and metric collapse into one series |
-| Rule evaluation | `OperatorTests`, `RuleEvaluationServiceTests`, `RuleCatalogTests` | every boundary of every operator; applicability by metric and device; disabled rules; classification and the no-rule policy; invalid rules rejected at load |
+| Rule evaluation | `OperatorTests`, `RuleApplicabilityTests`, `RuleEvaluationServiceTests`, `RuleCatalogTests` | every boundary of every operator; applicability by metric and device; disabled rules; classification and the no-rule policy; invalid rules rejected at load |
 | `SustainedAbove` with out-of-order data | `SustainedAboveTests`, `IngestionServiceTests` | shuffled and reversed input give the same episodes; ordering is by event time, not `seq`; open, gapped, tied and lone-spike stretches; a file in any order gives the same outcome |
 | Alert cooldown | `CooldownPlannerTests`, `AlertingPipelineTests` | window edges (299 s vs 300 s); per-rule cooldown; per sensor; alerts stored by earlier files; a late episode before a stored alert; the invariant that no two alerts of a key are nearer than the cooldown, checked on random input |
 | Idempotent re-run | `IdempotencyTests` | the same file twice, ten times, or shuffled leaves readings, rule results and alerts exactly as one run did; a corrected reading updates its violations instead of duplicating them |
@@ -412,12 +638,24 @@ grew with time and an untested tolerance boundary, were closed.
   arrival order (see above).
 - **Two stores, no shared transaction.** Readings go to InfluxDB and results to PostgreSQL. If the
   process dies between them, one store is ahead of the other; running the same file again repairs it,
-  because every write is keyed and idempotent.
-- **No plausibility bounds.** Any finite number is a valid reading; catching an absurd value such as
-  `1000000` or the `-9999` sentinel is the job of the rules, not of validation.
+  because every write is keyed and idempotent. Two stores also mean two things to run, back up and
+  monitor, where a single PostgreSQL would have been one.
+- **`seq` as a tag means one series per reading.** It is what makes InfluxDB's point identity match the
+  task's definition of a duplicate, but a tag with unbounded distinct values is what InfluxDB advises
+  against: this feed produces about as many series as points. That is harmless at 2,104 readings and
+  would not scale to a large feed, where I would derive the reading's identity differently or use a store
+  with a unique constraint.
+- **Aggregation is computed in memory.** The service reads the requested series from InfluxDB and
+  buckets it in the Domain layer. The number of buckets is capped at 10,000, but the number of readings
+  read is not, which is fine at this volume and would be pushed down into the store at a larger one.
+- **The orchestration lives in Infrastructure.** Following the convention inherited from Taghsim, the
+  service implementations are in Infrastructure rather than Application; see
+  [A deliberate deviation](#a-deliberate-deviation-and-what-it-costs).
 - **Classification is read across two stores.** Acceptable readings come from InfluxDB minus the
   violations held in PostgreSQL. Between an ingestion writing one store and the other, a query can
   briefly see them out of step; re-running the file settles it.
+- **No plausibility bounds.** Any finite number is a valid reading; catching an absurd value such as
+  `1000000` or the `-9999` sentinel is the job of the rules, not of validation.
 - **Blank lines** are skipped and not counted in `total lines read`.
 - The `?path=` parameter of the ingestion endpoint accepts any readable path. That suits this local
   task and would be restricted to an allow-listed directory in a deployed service.
