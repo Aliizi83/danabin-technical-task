@@ -331,6 +331,11 @@ Behaviour, each point deliberately chosen:
   and is absent.
 - A value without an offset is read as UTC; `deviceId` and `metric` are case-insensitive and echoed in
   their registered spelling.
+- The three lists (`acceptable`, `unacceptable`, `alerts`) are **paged**: `page` starts at 1, `pageSize`
+  is 1 to 1000 (default 100), and the response carries `pageNumber`, `pageSize`, `totalCount` and
+  `totalPages`. Each list is fully ordered (readings by `(ts, seq)`, alerts by start, rule, sensor and
+  metric), because the stores do not promise an order and a page boundary must fall in the same place
+  on every call. A page past the end is an empty `200` that still reports the real total.
 - Bad input is answered with a status, not an exception: `400` for a missing parameter, `from >= to`,
   a non-positive `bucketSeconds` or a range that would make more than 10,000 buckets; `404` for an
   unregistered sensor or metric.
@@ -373,7 +378,7 @@ separately, because removing a duplicate is not a data-quality failure.
 
 ## Tests
 
-`dotnet test` runs the suite (230 tests, under a second, no database or Docker needed).
+`dotnet test` runs the suite (263 tests, under a second, no database or Docker needed).
 
 | Area the task names | Where | What it pins down |
 | --- | --- | --- |
@@ -382,6 +387,7 @@ separately, because removing a duplicate is not a data-quality failure.
 | `SustainedAbove` with out-of-order data | `SustainedAboveTests`, `IngestionServiceTests` | shuffled and reversed input give the same episodes; ordering is by event time, not `seq`; open, gapped, tied and lone-spike stretches; a file in any order gives the same outcome |
 | Alert cooldown | `CooldownPlannerTests`, `AlertingPipelineTests` | window edges (299 s vs 300 s); per-rule cooldown; per sensor; alerts stored by earlier files; a late episode before a stored alert; the invariant that no two alerts of a key are nearer than the cooldown, checked on random input |
 | Idempotent re-run | `IdempotencyTests` | the same file twice, ten times, or shuffled leaves readings, rule results and alerts exactly as one run did; a corrected reading updates its violations instead of duplicating them |
+| Pagination | `PaginationTests`, `PagingHelperTests` | every page of every list walked at several page sizes: no duplicate, no gap, right order and metadata; the last partial page; a page number large enough to overflow an `int` offset; alerts tied on start time; stores that return rows in arbitrary order |
 | Aggregation | `TimeBucketAggregatorTests`, `ReadingQueryServiceTests` | bucket alignment, half-open range, empty buckets, and that unacceptable readings never move the count, average, min or max |
 
 The pipeline tests drive the real services against in-memory stores that enforce the **same natural
